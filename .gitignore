@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# 환경변수 (.env.example만 커밋)
+.env
+.env.*
+!.env.example
+
+# 테스트·커버리지
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# 런타임 데이터 (로컬 캐시·로그)
+# 대화 상태·프로필은 인메모리라 영속 파일이 없다.
+.er_finder/
+logs/
+*.log
+
+# 벤치마크 결과
+benchmark-results/
+
+# 에디터·OS
+.vscode/
+.idea/
+.DS_Store
