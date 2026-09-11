@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
     "rich>=13.7",
+    "streamlit>=1.50,<2",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-er-finder = "er_finder.__main__:main"
+er-finder = "er_finder.cli.app:main"
 
 [build-system]
 requires = ["hatchling"]

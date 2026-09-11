@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 import pytest
 from langchain_core.messages import HumanMessage
 
-
 # ---------------------------------------------------------------------------
 # chat()
 # ---------------------------------------------------------------------------
@@ -81,9 +80,7 @@ def test_chat_switches_to_visit_mode_when_candidate_index_is_selected(
     make_finder, runner_module, monkeypatch, make_assessment, make_reply, make_hospital
 ):
     finder = make_finder()
-    finder.last_reply = make_reply(
-        hospitals=[make_hospital(hpid="H1"), make_hospital(hpid="H2")]
-    )
+    finder.last_reply = make_reply(hospitals=[make_hospital(hpid="H1"), make_hospital(hpid="H2")])
     finder.classifier.assess.return_value = make_assessment(blocked=False)
     monkeypatch.setattr(runner_module, "selected_index", lambda text: 1)
 
@@ -172,9 +169,7 @@ def test_run_graph_falls_back_to_make_reply_and_evidence_check_when_no_structure
     assert result.reply is checked_reply
 
 
-def test_run_graph_marks_pending_and_returns_pending_approval_on_interrupt(
-    make_finder, make_reply
-):
+def test_run_graph_marks_pending_and_returns_pending_approval_on_interrupt(make_finder, make_reply):
     finder = make_finder()
     reply = make_reply()
     finder.graph.invoke.return_value = {"structured_response": reply, "__interrupt__": ["paused"]}
@@ -268,3 +263,29 @@ def test_close_ends_session_and_closes_provider(make_finder):
     finder.close()
 
     finder.session.provider.close.assert_called_once()
+
+
+def test_runner_fixture_restores_existing_modules_and_parent_attributes(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    import er_finder.agent as agent_package
+    import er_finder.memory as memory_package
+    import er_finder.memory.store as real_store
+    from tests.unit.agent.conftest import runner_module
+
+    original_runner = ModuleType("er_finder.agent.runner")
+    monkeypatch.setitem(sys.modules, "er_finder.agent.runner", original_runner)
+    monkeypatch.setattr(agent_package, "runner", original_runner, raising=False)
+    scope = runner_module.__wrapped__(monkeypatch)
+    try:
+        isolated_runner = next(scope)
+        assert isolated_runner is not original_runner
+        assert sys.modules["er_finder.memory.store"] is not real_store
+    finally:
+        scope.close()
+
+    assert sys.modules["er_finder.agent.runner"] is original_runner
+    assert agent_package.runner is original_runner
+    assert sys.modules["er_finder.memory.store"] is real_store
+    assert memory_package.store is real_store

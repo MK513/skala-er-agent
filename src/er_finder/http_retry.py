@@ -4,7 +4,7 @@ E-Gen(`medical_api`)과 카카오(`search`) 둘 다 이 모듈을 쓴다. 어느
 속한 게 아니라서 `medical_api` 밑이 아니라 여기(최상위)에 둔다.
 
 - 타임아웃: 기본 5초
-- 재시도 대상: 타임아웃, 5xx, 429 (최대 2회, 매번 1초 대기)
+- 재시도 대상: 연결 실패, 타임아웃, 5xx, 429 (최대 2회, 매번 1초 대기)
 - 재시도 제외: 그 외 4xx 등 - 재시도해도 똑같이 실패할 오류라 바로 예외
 """
 
@@ -21,8 +21,8 @@ DEFAULT_BACKOFF = 1.0
 
 
 def is_retryable(error: httpx.HTTPError) -> bool:
-    """타임아웃, 5xx, 429만 재시도 대상으로 본다."""
-    if isinstance(error, httpx.TimeoutException):
+    """연결 실패, 타임아웃, 5xx, 429만 재시도 대상으로 본다."""
+    if isinstance(error, (httpx.ConnectError, httpx.TimeoutException)):
         return True
     if isinstance(error, httpx.HTTPStatusError):
         status_code = error.response.status_code
@@ -44,7 +44,8 @@ def request_with_transport_retries(
 ) -> httpx.Response:
     """요청을 보내고 응답을 돌려준다.
 
-    타임아웃·5xx·429가 나면 최대 max_retries번 다시 시도한다(시도 사이에 backoff초 대기).
+    연결 실패·타임아웃·5xx·429가 나면 최대 max_retries번 다시 시도한다.
+    시도 사이에 backoff초 대기한다.
     그 외 오류는 재시도하지 않고 바로 예외를 던진다.
     client를 넘기면 그 클라이언트로 보내고, `None`이면 매번 새로 연결해서 보낸다.
     """

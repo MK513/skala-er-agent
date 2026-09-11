@@ -19,20 +19,6 @@ import pytest
 
 from er_finder.models import ERSearchReply, HospitalCandidate
 
-_STUB_MODULE_NAMES = [
-    "er_finder.cli.renderer",
-    "er_finder.guardrails.middleware",
-    "er_finder.guardrails.pii",
-    "er_finder.guardrails.triage",
-    "er_finder.memory.context",
-    "er_finder.memory.session",
-    "er_finder.memory.state",
-    "er_finder.memory.store",
-    "er_finder.memory.visit_plan",
-    "er_finder.safety",
-    "er_finder.search.service",
-]
-
 
 class _StubSearchSession:
     def __init__(self, provider, transport):
@@ -82,54 +68,73 @@ class _StubInputClassifier:
         raise NotImplementedError("테스트에서 classifier를 직접 주입하세요.")
 
 
-def _register_stub_module(name, **attrs):
+def _register_stub_module(monkeypatch, name, **attrs):
     module = types.ModuleType(name)
     for key, value in attrs.items():
         setattr(module, key, value)
-    sys.modules[name] = module
+    monkeypatch.setitem(sys.modules, name, module)
+    parent_name, _, attribute = name.rpartition(".")
+    parent = sys.modules.get(parent_name)
+    if parent is not None:
+        monkeypatch.setattr(parent, attribute, module, raising=False)
     return module
 
 
 @pytest.fixture
 def runner_module(monkeypatch):
-    """스텁을 심고 er_finder.agent.runner를 새로 import해서 돌려준다."""
-    import er_finder.models as models_module
+    """Restore both module-cache entries and package attributes, even on setup failure."""
+    with monkeypatch.context() as scoped:
+        import er_finder.models as models_module
 
-    monkeypatch.setattr(models_module, "EMERGENCY", "EMERGENCY_SENTINEL", raising=False)
+        scoped.setattr(models_module, "EMERGENCY", "EMERGENCY_SENTINEL", raising=False)
 
-    _register_stub_module("er_finder.cli.renderer", render_reply=lambda reply, note=None, pending=None: "rendered")
-    _register_stub_module(
-        "er_finder.guardrails.middleware",
-        EmergencyInputGuard=lambda *a, **k: MagicMock(name="EmergencyInputGuard"),
-        EvidenceCheckMiddleware=lambda *a, **k: MagicMock(name="EvidenceCheckMiddleware"),
-        ProfileDynamicPrompt=lambda *a, **k: MagicMock(name="ProfileDynamicPrompt"),
-    )
-    _register_stub_module("er_finder.guardrails.pii", PII_PATTERN=object())
-    _register_stub_module("er_finder.guardrails.triage", InputClassifier=_StubInputClassifier)
-    _register_stub_module("er_finder.memory.context", RuntimeContext=_StubRuntimeContext)
-    _register_stub_module(
-        "er_finder.memory.session",
-        clear_session=MagicMock(),
-        make_checkpointer=MagicMock(return_value=MagicMock(name="checkpointer")),
-    )
-    _register_stub_module("er_finder.memory.state", ERGraphState=object)
-    _register_stub_module("er_finder.memory.store", Profiles=_StubProfiles)
-    _register_stub_module(
-        "er_finder.memory.visit_plan",
-        VisitPlan=_StubVisitPlan,
-        selected_index=lambda text: None,
-    )
-    _register_stub_module("er_finder.safety", mask_pii=lambda text: text, safe_data=lambda value: value)
-    _register_stub_module("er_finder.search.service", SearchSession=_StubSearchSession)
+        _register_stub_module(
+            scoped,
+            "er_finder.cli.renderer",
+            render_reply=lambda reply, note=None, pending=None: "rendered",
+        )
+        _register_stub_module(
+            scoped,
+            "er_finder.guardrails.middleware",
+            EmergencyInputGuard=lambda *a, **k: MagicMock(name="EmergencyInputGuard"),
+            EvidenceCheckMiddleware=lambda *a, **k: MagicMock(name="EvidenceCheckMiddleware"),
+            ProfileDynamicPrompt=lambda *a, **k: MagicMock(name="ProfileDynamicPrompt"),
+        )
+        _register_stub_module(scoped, "er_finder.guardrails.pii", PII_PATTERN=object())
+        _register_stub_module(
+            scoped, "er_finder.guardrails.triage", InputClassifier=_StubInputClassifier
+        )
+        _register_stub_module(
+            scoped, "er_finder.memory.context", RuntimeContext=_StubRuntimeContext
+        )
+        _register_stub_module(
+            scoped,
+            "er_finder.memory.session",
+            clear_session=MagicMock(),
+            make_checkpointer=MagicMock(return_value=MagicMock(name="checkpointer")),
+        )
+        _register_stub_module(scoped, "er_finder.memory.state", ERGraphState=object)
+        _register_stub_module(scoped, "er_finder.memory.store", Profiles=_StubProfiles)
+        _register_stub_module(
+            scoped,
+            "er_finder.memory.visit_plan",
+            VisitPlan=_StubVisitPlan,
+            selected_index=lambda text: None,
+        )
+        _register_stub_module(
+            scoped, "er_finder.safety", mask_pii=lambda text: text, safe_data=lambda value: value
+        )
+        _register_stub_module(scoped, "er_finder.search.service", SearchSession=_StubSearchSession)
 
-    sys.modules.pop("er_finder.agent.runner", None)
-    module = importlib.import_module("er_finder.agent.runner")
+        import er_finder.agent as package
 
-    yield module
-
-    sys.modules.pop("er_finder.agent.runner", None)
-    for name in _STUB_MODULE_NAMES:
-        sys.modules.pop(name, None)
+        # Record the previous entry before removing it for a fresh import. The
+        # scoped patch also removes a newly imported runner when none existed.
+        scoped.setitem(sys.modules, "er_finder.agent.runner", None)
+        sys.modules.pop("er_finder.agent.runner")
+        scoped.setattr(package, "runner", None, raising=False)
+        module = importlib.import_module("er_finder.agent.runner")
+        yield module
 
 
 @pytest.fixture
@@ -165,7 +170,7 @@ def make_reply():
             search_radius_km=5,
             hospitals=[],
             no_candidate_reason="후보를 찾지 못했습니다",
-            data_timestamp="2026-01-01T00:00:00",
+            data_timestamp="2026-01-01T00:00:00+09:00",
             next_action="가까운 병원에 전화로 확인하세요",
             disclaimer="응급실 상황은 수시로 변하므로 방문 전 전화 확인을 권장합니다",
         )
@@ -183,10 +188,12 @@ def make_hospital():
             name="서울병원",
             distance_km=1.2,
             er_beds_available=2,
-            beds_updated_at="2026-01-01T00:00:00",
+            beds_updated_at="2026-01-01T00:00:00+09:00",
             accepts_condition="unknown",
             er_tel="02-000-0000",
             address="서울시 어딘가",
+            is_cached=False,
+            is_stale=False,
         )
         data.update(overrides)
         return HospitalCandidate(**data)

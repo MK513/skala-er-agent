@@ -15,11 +15,16 @@ def make_facility(name, distance_km, er_tel=None, address=None):
     return {"name": name, "distance_km": distance_km, "er_tel": er_tel, "address": address}
 
 
+def passthrough_or_unknown(value):
+    # Preserve safe_data's required string fallback without exercising its rules.
+    return value if isinstance(value, str) and value.strip() else "확인 불가"
+
+
 @pytest.fixture(autouse=True)
 def passthrough_safe_data(monkeypatch):
     # select_candidates only orchestrates safety scrubbing; the scrubbing
     # rules themselves belong to er_finder.safety and are tested there.
-    monkeypatch.setattr("er_finder.search.candidates.safe_data", lambda value: value)
+    monkeypatch.setattr("er_finder.search.candidates.safe_data", passthrough_or_unknown)
 
 
 def test_is_stale_missing_or_malformed_timestamp():
@@ -116,7 +121,7 @@ def test_phone_number_is_taken_from_detail_then_bed_then_facility():
 def test_phone_number_scrubbed_to_unverifiable_is_cleared_to_none(monkeypatch):
     monkeypatch.setattr(
         "er_finder.search.candidates.safe_data",
-        lambda value: "확인 불가" if value == "facility-tel" else value,
+        lambda value: "확인 불가" if value == "facility-tel" else passthrough_or_unknown(value),
     )
     facilities = {"H1": make_facility("병원1", 1.0, er_tel="facility-tel")}
     beds = {"H1": {"er_beds_available": 1, "beds_updated_at": iso()}}

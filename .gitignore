@@ -32,6 +32,8 @@ logs/
 
 # 벤치마크 결과
 benchmark-results/
+verification-results/
+.streamlit/secrets.toml
 
 # 에디터·OS
 .vscode/
