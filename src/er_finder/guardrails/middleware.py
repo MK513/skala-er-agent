@@ -6,6 +6,7 @@ from langchain.agents.middleware import (
     after_agent,
     before_agent,
     dynamic_prompt,
+    hook_config,
 )
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 
@@ -45,13 +46,13 @@ def ProfileDynamicPrompt(session, profiles, visit):
     데이터로만 직렬화해서 붙인다.
     """
 
-    @dynamic_prompt(name="ProfileDynamicPrompt")
+    @dynamic_prompt
     def profile_dynamic_prompt(request):
         data = session.status()
         data.update(
             transport=request.runtime.context.transport,
-            home_address=profiles.home_address(),
-            recent_visits=profiles.recent_visits()[-3:],
+            home_address=profiles.get_home_address(),
+            recent_visits=profiles.get_recent_visits(limit=3),
             pending_visit=visit.pending if not visit.decided else None,
             visit_decided=visit.decided,
             visit_saved=visit.saved,
@@ -68,8 +69,8 @@ def ProfileDynamicPrompt(session, profiles, visit):
 def EvidenceCheckMiddleware(session):
     """Output 가드레일 (after_agent).
 
-    - 근거 없는 수치 차단: 병원명·병상 수·전화번호가 ToolMessage 집합에 실제로
-      있는지 session.check_evidence가 대조하고, 없는 값은 '확인 불가'로 치환한다.
+    - 근거 없는 수치 차단: 형식이 올바른 응답도 session.check_evidence가
+      모델 외부에 보관한 조회 근거로 재구성한다. 모델의 수치는 채택하지 않는다.
     - 진단·처방 표현 차단: 위 대조를 통과한 응답에도 자유 문장(next_action,
       no_candidate_reason)에 진단·처방 표현이 남아 있으면 evidence.sanitize_prose로
       해당 문장을 제거하고 "진단은 의료진에게 문의하세요." 안내를 덧붙인다.
@@ -94,20 +95,41 @@ def EvidenceCheckMiddleware(session):
 # 아래 두 미들웨어(ToolSafetyMiddleware, ModelCounter)는 설계서 3.2 표의 가드레일이
 # 아니라 "실행 Middleware"(도구 호출 순서 강제·병렬화, 호출 횟수 집계) 영역
 
+
 class ToolSafetyMiddleware(AgentMiddleware):
     def __init__(self, visit, session):
         self.visit, self.session = visit, session
 
+    def _lookup_failure_reply(self):
+        reply = self.session.check_evidence(None)
+        return {
+            "jump_to": "end",
+            "structured_response": reply,
+            "messages": [AIMessage(content=reply.next_action)],
+            **self.session.snapshot(),
+        }
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state, runtime):
+        if self.session.lookup_error:
+            return self._lookup_failure_reply()
+        return None
+
+    @hook_config(can_jump_to=["end"])
     def after_model(self, state, runtime):
+        if self.session.lookup_error:
+            return self._lookup_failure_reply()
         last = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage)), None)
         if last is None:
             return None
-        next_calls = self.session.next_calls() if not self.visit.pending else []
-        if next_calls and (
-            not last.tool_calls or any(c["name"] == "ERSearchReply" for c in last.tool_calls)
-        ):
-            # A premature answer cannot bypass mandatory evidence collection. Replace its
-            # schema call and acknowledgement with the validated pending read-only calls.
+        if self.visit.pending and not self.visit.decided:
+            self.visit.validate(self.visit.pending)
+            next_calls = [{"name": "save_visit_plan", "args": dict(self.visit.pending)}]
+        else:
+            next_calls = self.session.next_calls() if not self.visit.pending else []
+        if next_calls:
+            # Server-owned calls enforce both order and arguments, including one selected
+            # save request. Drop acknowledgements of replaced structured-output calls.
             old_ids = {c["id"] for c in last.tool_calls}
             removals = [
                 RemoveMessage(id=m.id)
@@ -127,46 +149,48 @@ class ToolSafetyMiddleware(AgentMiddleware):
                 ],
                 "structured_response": None,
             }
-        if not self.session.beds_checked and any(
-            c["name"] in {"get_er_bed_status", "get_severe_acceptance"} for c in last.tool_calls
-        ):
-            expected = self.session.next_calls()
-            if {c["name"] for c in expected} == {"get_er_bed_status", "get_severe_acceptance"}:
-                # Submit two independent reads in one model turn, but the severe handler
-                # waits for the bed result so actual provider calls preserve dependencies.
-                calls = [{**c, "id": str(uuid4()), "type": "tool_call"} for c in expected]
-                self.session.allow_severe_batch = True
-                self.session.beds_ready.clear()
-                return {"messages": [last.model_copy(update={"tool_calls": calls})]}
-        accepted, errors = [], []
-        for call in last.tool_calls:
-            if call["name"] == "save_visit_plan":
-                try:
-                    self.visit.validate(call["args"])
-                except ValueError:
-                    errors.append(
-                        ToolMessage(
-                            content="사용자가 선택한 병원과 일치하지 않아 저장 요청을 차단했습니다.",
-                            tool_call_id=call["id"],
-                            status="error",
-                        )
-                    )
-                    continue
-            accepted.append(call)
-        if errors:
-            return {"messages": [last.model_copy(update={"tool_calls": accepted}), *errors]}
+        rejected_ids = {c["id"] for c in last.tool_calls if c["name"] == "save_visit_plan"}
+        if rejected_ids:
+            # HITL examines AI tool calls even if a ToolMessage already answers them.
+            # Remove rejected calls and any matching results before HITL can interrupt.
+            removals = [
+                RemoveMessage(id=m.id)
+                for m in state["messages"]
+                if isinstance(m, ToolMessage) and m.tool_call_id in rejected_ids and m.id
+            ]
+            accepted = [c for c in last.tool_calls if c["id"] not in rejected_ids]
+            return {
+                "messages": [
+                    *removals,
+                    last.model_copy(
+                        update={
+                            "tool_calls": accepted,
+                            "content": "사용자 선택이 없어 저장 요청을 차단했습니다.",
+                        }
+                    ),
+                ]
+            }
         return None
 
     def wrap_tool_call(self, request, handler):
         try:
+            if self.session.lookup_error:
+                return ToolMessage(
+                    content="외부 조회가 실패하여 추가 조회를 중단했습니다.",
+                    tool_call_id=request.tool_call["id"],
+                    status="error",
+                )
             return handler(request)
         except (ValueError, TypeError, KeyError):
             return ToolMessage(
-                content="도구 인자 또는 호출 순서가 올바르지 않습니다. 현재 next_calls를 확인하세요.",
+                content=(
+                    "도구 인자 또는 호출 순서가 올바르지 않습니다. 현재 next_calls를 확인하세요."
+                ),
                 tool_call_id=request.tool_call["id"],
                 status="error",
             )
         except Exception:
+            self.session.fail_lookup()
             return ToolMessage(
                 content="외부 조회를 완료하지 못했습니다. 확인되지 않은 정보는 사용하지 마세요.",
                 tool_call_id=request.tool_call["id"],

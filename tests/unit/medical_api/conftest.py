@@ -7,6 +7,13 @@ import pytest
 FIXTURE_DIR = Path(__file__).parent.parent.parent / "fixtures" / "egen"
 
 
+@pytest.fixture(autouse=True)
+def synthetic_service_key(monkeypatch):
+    from er_finder.medical_api import client
+
+    monkeypatch.setattr(client, "SERVICE_KEY", "offline-egen-key")
+
+
 @pytest.fixture
 def egen_fixture():
     """이름으로 tests/fixtures/egen/ 안의 XML 파일을 읽어주는 함수를 돌려준다.

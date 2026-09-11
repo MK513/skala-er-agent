@@ -1,11 +1,9 @@
-"""agent/tools.py 검증.
+"""Tool schemas and delegates against real search, selection and memory implementations."""
 
-tools.py는 순수하게 config['configurable']['session']으로 호출을 위임만 하므로,
-가짜 session 객체만 주면 실제 langchain 모델 호출 없이 전체 도구를 검증할 수 있다.
-"""
+import pytest
+from langgraph.store.memory import InMemoryStore
 
-from unittest.mock import MagicMock
-
+from er_finder.agent.adapters import VisitSelection
 from er_finder.agent.tools import (
     TOOLS,
     geocode,
@@ -15,90 +13,107 @@ from er_finder.agent.tools import (
     list_nearby_ers,
     save_visit_plan,
 )
+from er_finder.memory.store import ERFinderStore
+from er_finder.search.service import SearchSession
+from tests.unit.agent.conftest import OfflineProvider
 
 
-def _config(session):
-    return {"configurable": {"session": session}}
+@pytest.fixture
+def setup():
+    session = SearchSession(OfflineProvider())
+    session.begin("강남구 역삼동 가슴이 답답하고 식은땀이 나요")
+    profiles = ERFinderStore(InMemoryStore(), "tools-test")
+    visit = VisitSelection(profiles, session)
+    return session, profiles, visit, {"configurable": {"session": session, "visit": visit}}
 
 
-def test_tools_registers_all_six_tools_in_call_order():
-    names = [t.name for t in TOOLS]
-    assert names == [
-        "geocode",
-        "list_nearby_ers",
-        "get_er_bed_status",
-        "get_severe_acceptance",
-        "get_er_detail",
-        "save_visit_plan",
-    ]
+def locate(session, config):
+    geocode.invoke({"query": session.location_query}, config=config)
+    list_nearby_ers.invoke(session.next_calls()[0]["args"], config=config)
 
 
-def test_geocode_delegates_to_session_and_returns_its_result():
-    session = MagicMock()
-    session.geocode.return_value = {"lat": 37.5, "lon": 127.0, "found": True}
-
-    result = geocode.invoke({"query": "강남역"}, config=_config(session))
-
-    session.geocode.assert_called_once_with("강남역")
-    assert result == {"lat": 37.5, "lon": 127.0, "found": True}
-
-
-def test_list_nearby_ers_passes_coordinates_and_radius():
-    session = MagicMock()
-    session.list_nearby_ers.return_value = [{"hpid": "H1"}]
-
-    result = list_nearby_ers.invoke(
-        {"lat": 37.5, "lon": 127.0, "radius_km": 5}, config=_config(session)
-    )
-
-    session.list_nearby_ers.assert_called_once_with(37.5, 127.0, 5)
-    assert result == [{"hpid": "H1"}]
+def finish(session, config):
+    tools = {item.name: item for item in TOOLS}
+    for _ in range(20):
+        calls = session.next_calls()
+        if not calls:
+            return session.make_reply()
+        for call in calls:
+            tools[call["name"]].invoke(call["args"], config=config)
+    raise AssertionError("tool sequence did not finish")
 
 
-def test_get_er_bed_status_passes_region_and_hpids():
-    session = MagicMock()
-    session.get_er_bed_status.return_value = [{"hpid": "H1", "er_beds_available": 3}]
-
-    result = get_er_bed_status.invoke(
-        {"sido": "서울", "sigungu": "강남구", "hpids": ["H1", "H2"]},
-        config=_config(session),
-    )
-
-    session.get_er_bed_status.assert_called_once_with("서울", "강남구", ["H1", "H2"])
-    assert result == [{"hpid": "H1", "er_beds_available": 3}]
+def test_geocode_and_nearby_use_validated_coordinates(setup):
+    session, _, _, config = setup
+    located = geocode.invoke({"query": "강남구 역삼동"}, config=config)
+    assert located["location"]["lat"] == 37.5
+    with pytest.raises(ValueError):
+        list_nearby_ers.invoke({"lat": 0, "lon": 0, "radius_km": 5}, config=config)
+    listed = list_nearby_ers.invoke(session.next_calls()[0]["args"], config=config)
+    assert listed["facilities"]
 
 
-def test_get_severe_acceptance_passes_condition():
-    session = MagicMock()
-    session.get_severe_acceptance.return_value = [{"hpid": "H1", "acceptable": True}]
-
-    result = get_severe_acceptance.invoke(
-        {"sido": "서울", "sigungu": "강남구", "condition": "심근경색"},
-        config=_config(session),
-    )
-
-    session.get_severe_acceptance.assert_called_once_with("서울", "강남구", "심근경색")
-    assert result == [{"hpid": "H1", "acceptable": True}]
+def test_bed_tool_accepts_actual_regions_contract_and_rejects_invented_hpid(setup):
+    session, _, _, config = setup
+    locate(session, config)
+    args = session.next_calls()[0]["args"]
+    assert "regions" in args
+    with pytest.raises(ValueError):
+        get_er_bed_status.invoke({**args, "hpids": ["FORGED"]}, config=config)
+    result = get_er_bed_status.invoke(args, config=config)
+    assert result["beds"] and session.beds_checked
 
 
-def test_get_er_detail_passes_hpid():
-    session = MagicMock()
-    session.get_er_detail.return_value = {"name": "서울병원", "er_tel": "02-000-0000"}
+def test_severe_tool_uses_regions_and_preserves_unknown_or_rejected_acceptance(setup):
+    session, _, _, config = setup
+    locate(session, config)
+    get_er_bed_status.invoke(session.next_calls()[0]["args"], config=config)
+    result = get_severe_acceptance.invoke(session.next_calls()[0]["args"], config=config)
+    assert session.severe_checked
+    assert any(item["acceptable"] is False for item in result["acceptance"])
 
-    result = get_er_detail.invoke({"hpid": "H1"}, config=_config(session))
 
-    session.get_er_detail.assert_called_once_with("H1")
-    assert result == {"name": "서울병원", "er_tel": "02-000-0000"}
+def test_detail_requires_current_top_candidate(setup):
+    session, _, _, config = setup
+    with pytest.raises(ValueError):
+        get_er_detail.invoke({"hpid": "FORGED"}, config=config)
+    reply = finish(session, config)
+    assert all(hospital.hpid in session.details for hospital in reply.hospitals)
 
 
-def test_save_visit_plan_passes_hpid_name_and_symptom_summary():
-    session = MagicMock()
-    session.save_visit_plan.return_value = {"saved": True, "visit_id": "V1"}
+def test_save_requires_explicit_approval_and_writes_once(setup):
+    session, profiles, visit, config = setup
+    reply = finish(session, config)
+    visit.prepare(reply.hospitals[0], session.symptom_text)
+    args = visit.pending
+    with pytest.raises(ValueError):
+        save_visit_plan.invoke(args, config=config)
+    assert profiles.get_recent_visits() == []
+    visit.authorize(True)
+    result = save_visit_plan.invoke(args, config=config)
+    assert result["saved"] and result["visit_id"]
+    with pytest.raises(ValueError):
+        save_visit_plan.invoke(args, config=config)
+    assert len(profiles.get_recent_visits()) == 1
 
-    result = save_visit_plan.invoke(
-        {"hpid": "H1", "name": "서울병원", "symptom_summary": "흉통, 식은땀"},
-        config=_config(session),
-    )
 
-    session.save_visit_plan.assert_called_once_with("H1", "서울병원", "흉통, 식은땀")
-    assert result == {"saved": True, "visit_id": "V1"}
+def test_save_rejects_forged_arguments_even_after_approval(setup):
+    session, profiles, visit, config = setup
+    reply = finish(session, config)
+    visit.prepare(reply.hospitals[0], session.symptom_text)
+    visit.authorize(True)
+    with pytest.raises(ValueError):
+        save_visit_plan.invoke({**visit.pending, "hpid": "FORGED"}, config=config)
+    assert profiles.get_recent_visits() == []
+
+
+def test_save_rejects_previous_search_selection(setup):
+    session, profiles, visit, config = setup
+    reply = finish(session, config)
+    visit.prepare(reply.hospitals[0], session.symptom_text)
+    visit.authorize(True)
+    args = visit.pending
+    session.begin("경포대 발목 통증")
+    with pytest.raises(ValueError):
+        save_visit_plan.invoke(args, config=config)
+    assert profiles.get_recent_visits() == []

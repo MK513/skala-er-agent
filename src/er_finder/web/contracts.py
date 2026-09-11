@@ -1,4 +1,4 @@
-"""UI-owned view contract; does not replace member 1's future domain models."""
+"""Validated display contract for the real agent boundary."""
 
 from dataclasses import dataclass
 from typing import Literal, Protocol
@@ -57,7 +57,7 @@ class Message:
 
 
 class Backend(Protocol):
-    """Future runner adapter implements this port; construction stays outside UI."""
+    """Runner adapters implement this port; construction stays outside UI."""
 
     user_id: str
     profile: ERFinderStore

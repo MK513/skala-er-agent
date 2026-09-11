@@ -77,7 +77,7 @@ def test_query_displays_recorded_source_data_and_reruns_make_no_request(nearby_t
     table = app.dataframe[0].value
     assert "A1100141" in list(table["기관 ID"])
     assert table.loc[table["기관 ID"] == "A1100141", "기관명"].item() == "강남베드로병원"
-    assert all(value == "확인 불가" for value in table["주소"])
+    assert table.loc[table["기관 ID"] == "A1100141", "주소"].item().startswith("서울특별시 강남구")
     assert any(value != "확인 불가" for value in table["대표전화"])
     assert "원자료" in visible_text(app)
     assert "offline-synthetic-key" not in visible_text(app)
@@ -115,7 +115,7 @@ def test_empty_or_failed_source_does_not_claim_no_hospitals(monkeypatch):
     assert not app.exception
     assert not app.dataframe
     assert "빈 응답" in visible_text(app)
-    assert "조회 실패" in visible_text(app)
+    assert "실패" not in visible_text(app)
 
 
 def test_failure_clears_old_rows_and_hides_raw_exception(nearby_transport, monkeypatch):
@@ -195,7 +195,7 @@ def test_detail_failure_keeps_nearby_table_and_hides_previous_detail(
     app.button(key="api_detail_search").click().run()
     assert "1544-7522" in visible_text(app)
 
-    def unavailable(hpid):
+    def unavailable(hpid, **kwargs):
         if failure == "exception":
             raise RuntimeError("PRIVATE_DETAIL serviceKey=never-display-this")
         return {}
@@ -207,4 +207,4 @@ def test_detail_failure_keeps_nearby_table_and_hides_previous_detail(
     assert "PRIVATE_DETAIL" not in visible_text(app)
     assert "never-display-this" not in visible_text(app)
     assert "서울특별시 강남구 남부순환로 2649, 베드로병원 (도곡동)" not in visible_text(app)
-    assert "조회 실패" in visible_text(app)
+    assert ("실패" if failure == "exception" else "빈 응답") in visible_text(app)

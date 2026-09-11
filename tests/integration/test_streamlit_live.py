@@ -180,3 +180,20 @@ def test_live_ui_only_explicit_refresh_repeats_the_query(connected_app):
     assert runner.calls == [(QUERY, False), (QUERY, True)]
     assert runner.approvals == []
     assert web.backend.profile.get_recent_visits() == []
+
+
+def test_coordinate_input_is_sent_to_runner_and_changed_location_cancels_approval(connected_app):
+    app, web, runner = connected_app
+    app.checkbox(key="use_coordinates").check().run()
+    app.number_input(key="chat_lat").set_value(37.5)
+    app.number_input(key="chat_lon").set_value(127.0)
+    app.chat_input(key="message").set_value("손가락이 부었어요").run()
+    assert runner.calls[-1][0] == "37.500000, 127.000000 손가락이 부었어요"
+    app.button(key="select_UI-TEST-001").click().run()
+    assert web.result.pending_approval is not None
+    app.number_input(key="chat_lat").set_value(37.6)
+    app.button(key="approve_visit").click().run()
+    assert not app.exception
+    assert runner.approvals == []
+    assert web.result is None
+    assert web.backend.profile.get_recent_visits() == []

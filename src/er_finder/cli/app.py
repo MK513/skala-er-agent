@@ -1,4 +1,4 @@
-"""Launch the member 6 web UI while the conversational CLI backend is pending."""
+"""Launch the ER Finder Streamlit application."""
 
 import sys
 from pathlib import Path

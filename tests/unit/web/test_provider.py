@@ -77,7 +77,11 @@ def test_failed_force_refresh_retains_only_client_stale_fallback(
     client, _ = medical
     provider = provider_module.LiveProvider(geocoder=Geocoder(), medical_client=client)
     previous = provider.get_er_bed_status("서울", "강남구", ["A1100015"])
-    monkeypatch.setattr(client, "_call", lambda endpoint, params: None)
+
+    def unavailable(endpoint, params):
+        raise client.EgenAPIError()
+
+    monkeypatch.setattr(client, "_call", unavailable)
     result = provider.get_er_bed_status("서울", "강남구", ["A1100015"], force_refresh=True)
     assert result[0]["er_beds_available"] == previous[0]["er_beds_available"]
     assert result[0]["stale"] and result[0]["is_stale"] and result[0]["is_cached"]

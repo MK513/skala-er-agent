@@ -1,12 +1,16 @@
-"""E-Gen API 호출 + 병상 캐시를 합쳐서 실제 도구 함수를 만드는 모듈.
+"""E-Gen calls and per-session caches.
 
-interfaces.md 2. 도구 인터페이스, api-contract.md 1.3~1.6을 따른다.
-모든 함수는 예외를 밖으로 던지지 않는다 - 실패하면 빈 목록/빈 dict로 돌려준다.
+The default interface retains empty-result fallbacks. Live consumers can pass
+raise_on_error=True to distinguish a failed request from a successful empty result.
 """
 
 from __future__ import annotations
 
+import logging
+import math
 import os
+import re
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from urllib.parse import unquote
 
@@ -19,17 +23,56 @@ from . import cache, parser
 
 load_dotenv()
 
-BASE_URL = os.environ.get("EGEN_BASE_URL", "http://apis.data.go.kr/B552657/ErmctInfoInqireService")
-# 공공데이터포털 서비스키가 이미 percent-encoded인 경우가 있어 미리 한 번 풀어둔다.
-SERVICE_KEY = unquote(os.environ.get("EGEN_SERVICE_KEY", ""))
-TIMEOUT = float(os.environ.get("ER_REQUEST_TIMEOUT", "5"))
-MAX_RETRIES = int(os.environ.get("ER_MAX_RETRIES", "2"))
-BACKOFF = float(os.environ.get("ER_RETRY_BACKOFF", "1"))
-BED_CACHE_TTL = float(os.environ.get("ER_BED_CACHE_TTL", "60"))
-STALE_MINUTES = float(os.environ.get("ER_STALE_MINUTES", "15"))
 
-# TriageAssessment.condition -> mkioskty 번호 (api-contract.md §1.5)
-# "중증외상"은 대응하는 코드가 없어 Sprint 2(외상센터 API)로 미룬다.
+def _bounded_number(value: object, default: float, lower: float, upper: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(upper, max(lower, number)) if math.isfinite(number) else default
+
+
+def _secure_url(value: str) -> str:
+    # Upgrade the legacy official URL before sending any credential.
+    return re.sub(r"^http://apis\.data\.go\.kr(?=/|$)", "https://apis.data.go.kr", value)
+
+
+BASE_URL = _secure_url(
+    os.environ.get("EGEN_BASE_URL", "https://apis.data.go.kr/B552657/ErmctInfoInqireService")
+)
+SERVICE_KEY = unquote(os.environ.get("EGEN_SERVICE_KEY", ""))
+TIMEOUT = _bounded_number(os.environ.get("ER_REQUEST_TIMEOUT"), 5, 0.1, 10)
+MAX_RETRIES = int(_bounded_number(os.environ.get("ER_MAX_RETRIES"), 2, 0, 2))
+BACKOFF = _bounded_number(os.environ.get("ER_RETRY_BACKOFF"), 1, 0, 1)
+BED_CACHE_TTL = _bounded_number(os.environ.get("ER_BED_CACHE_TTL"), 60, 1, 300)
+STALE_MINUTES = _bounded_number(os.environ.get("ER_STALE_MINUTES"), 15, 1, 15)
+DETAIL_CACHE_TTL = 300
+DETAIL_FAILURE_TTL = 60
+DETAIL_CACHE_LIMIT = 256
+REGION_DETAIL_LIMIT = 3
+
+
+class _ServiceKeyFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = re.sub(
+            r"([?&]serviceKey=)[^&\s\"']+", r"\1[REDACTED]", record.getMessage(), flags=re.I
+        )
+        record.args = ()
+        return True
+
+
+_httpx_logger = logging.getLogger("httpx")
+if not any(item.name == "egen-service-key" for item in _httpx_logger.filters):
+    _httpx_logger.addFilter(_ServiceKeyFilter("egen-service-key"))
+
+
+class EgenAPIError(RuntimeError):
+    """A safe boundary error: never include response bodies, URLs or service keys."""
+
+    def __init__(self) -> None:
+        super().__init__("E-Gen 조회를 완료하지 못했습니다. 연결과 서비스 설정을 확인하세요.")
+
+
 CONDITION_TO_MKIOSKTY = {
     "심근경색": [1],
     "뇌출혈": [3, 4],
@@ -43,96 +86,158 @@ def _build_params(extra: dict, num_of_rows: int = 100) -> dict:
     return {"serviceKey": SERVICE_KEY, "pageNo": 1, "numOfRows": num_of_rows, **extra}
 
 
-def _call(endpoint: str, params: dict) -> str | None:
-    """E-Gen을 호출해 응답 텍스트를 돌려준다. 실패하면 None을 돌려준다."""
-    url = BASE_URL.rstrip("/") + endpoint
+def _region_params(sido: str, sigungu: str) -> dict:
+    params = {"STAGE1": parser.normalize_sido(sido)}
+    if sigungu:
+        params["STAGE2"] = sigungu
+    return params
+
+
+def _call(endpoint: str, params: dict) -> str:
     try:
+        if not SERVICE_KEY.strip():
+            raise EgenAPIError()
         response = request_with_transport_retries(
             None,
             "GET",
-            url,
+            _secure_url(BASE_URL).rstrip("/") + endpoint,
             params=params,
-            timeout=TIMEOUT,
-            max_retries=MAX_RETRIES,
-            backoff=BACKOFF,
+            timeout=_bounded_number(TIMEOUT, 5, 0.1, 10),
+            max_retries=int(_bounded_number(MAX_RETRIES, 2, 0, 2)),
+            backoff=_bounded_number(BACKOFF, 1, 0, 1),
         )
-    except httpx.HTTPError:
-        return None
-    return response.text
+        return response.text
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError):
+        raise EgenAPIError() from None
+
+
+def _request(endpoint: str, extra: dict, parse: Callable) -> list | dict:
+    try:
+        return parse(_call(endpoint, _build_params(extra)))
+    except parser.EgenResponseError:
+        raise EgenAPIError() from None
 
 
 def _is_stale(beds_updated_at: str | None) -> bool:
-    """hvidate가 ER_STALE_MINUTES(기본 15분)보다 오래됐으면 True."""
-    if beds_updated_at is None:
+    if not beds_updated_at:
         return True
-    updated_at = datetime.fromisoformat(beds_updated_at)
-    return datetime.now() - updated_at > timedelta(minutes=STALE_MINUTES)
-
-
-def list_nearby_ers(lat: float, lon: float, radius_km: int = 5) -> list[dict]:
-    """좌표 반경 내 응급의료기관 목록. 거리 오름차순으로 돌려준다."""
-    params = _build_params({"WGS84_LAT": lat, "WGS84_LON": lon})
-    xml_text = _call("/getEgytLcinfoInqire", params)
-    if xml_text is None:
-        return []
-
     try:
-        rows = parser.parse_nearby(xml_text)
-    except parser.EgenResponseError:
+        updated_at = datetime.fromisoformat(beds_updated_at)
+        if updated_at.tzinfo is None:
+            return True
+        age = datetime.now(parser.KOREA_TZ) - updated_at
+        return age > timedelta(minutes=STALE_MINUTES) or age < -timedelta(minutes=1)
+    except (TypeError, ValueError):
+        return True
+
+
+def _cached_detail(detail_cache: dict, hpid: str) -> dict | None:
+    record = cache.get(detail_cache, hpid, ttl=DETAIL_CACHE_TTL)
+    if record is not None and record["lookup_failed"]:
+        return cache.get(detail_cache, hpid, ttl=DETAIL_FAILURE_TTL)
+    return record
+
+
+def list_nearby_ers(
+    lat: float,
+    lon: float,
+    radius_km: int = 5,
+    *,
+    detail_cache: dict | None = None,
+    raise_on_error: bool = False,
+) -> list[dict]:
+    try:
+        rows = _request(
+            "/getEgytLcinfoInqire", {"WGS84_LAT": lat, "WGS84_LON": lon}, parser.parse_nearby
+        )
+    except EgenAPIError:
+        if raise_on_error:
+            raise
         return []
 
     nearby = [
-        row for row in rows if row["distance_km"] is not None and row["distance_km"] <= radius_km
+        row
+        for row in rows
+        if row["hpid"]
+        and row["lat"] is not None
+        and -90 <= row["lat"] <= 90
+        and row["lon"] is not None
+        and -180 <= row["lon"] <= 180
+        and row["distance_km"] is not None
+        and 0 <= row["distance_km"] <= radius_km
     ]
     nearby.sort(key=lambda row: row["distance_km"])
+    details = detail_cache if detail_cache is not None else {}
+    extra_calls = 0
+    for row in nearby:
+        if not row["sido"] or row["sigungu"] is None:
+            cached = _cached_detail(details, row["hpid"])
+            if cached is not None or extra_calls < REGION_DETAIL_LIMIT:
+                if cached is None:
+                    extra_calls += 1
+                try:
+                    detail = get_er_detail(row["hpid"], detail_cache=details, raise_on_error=True)
+                except EgenAPIError:
+                    detail = {}
+                if detail.get("address"):
+                    row["address"] = detail["address"]
+                    row["sido"], row["sigungu"] = parser.region_from_address(row["address"])
+                row["er_tel"] = row["er_tel"] or detail.get("er_tel")
+        row["region_lookup_failed"] = not row["sido"] or row["sigungu"] is None
     return nearby
 
 
 def get_er_bed_status(
-    sido: str, sigungu: str, hpids: list[str], bed_cache: dict | None = None
+    sido: str,
+    sigungu: str,
+    hpids: list[str],
+    bed_cache: dict | None = None,
+    *,
+    raise_on_error: bool = False,
 ) -> list[dict]:
-    """실시간 가용병상 조회.
-
-    hpids로 필터링해서 돌려준다. 60초 캐시를 쓰고, 실패하면 캐시(있으면)로 폴백한다.
-    bed_cache는 대화 세션 동안 유지되는 dict를 넘겨받아야 한다 (interfaces.md §3 bed_cache).
-    """
     if bed_cache is None:
         bed_cache = {}
-    key = cache.make_key(sido, sigungu)
-
+    key = cache.make_key(parser.normalize_sido(sido), sigungu)
     rows = cache.get(bed_cache, key, ttl=BED_CACHE_TTL)
-    forced_stale = False
-
+    is_cached = rows is not None
+    lookup_failed = False
     if rows is None:
-        params = _build_params({"STAGE1": sido, "STAGE2": sigungu})
-        xml_text = _call("/getEmrrmRltmUsefulSckbdInfoInqire", params)
-        rows = None
-        if xml_text is not None:
-            try:
-                rows = parser.parse_bed_status(xml_text)
-                cache.save(bed_cache, key, rows)
-            except parser.EgenResponseError:
-                rows = None
-
-        if rows is None:
-            # 재시도까지 실패 -> 만료됐어도 캐시에 남아있는 값으로 폴백
+        try:
+            rows = _request(
+                "/getEmrrmRltmUsefulSckbdInfoInqire",
+                _region_params(sido, sigungu),
+                parser.parse_bed_status,
+            )
+        except EgenAPIError:
             expired = bed_cache.get(key)
             if expired is None:
+                if raise_on_error:
+                    raise
                 return []
             rows = expired[0]
-            forced_stale = True
+            is_cached = lookup_failed = True
+        else:
+            cache.save(bed_cache, key, rows)
 
     result = []
     for row in rows:
-        if row["hpid"] not in hpids:
-            continue
-        stale = forced_stale or _is_stale(row["beds_updated_at"])
-        result.append({**row, "stale": stale})
+        if row["hpid"] in hpids:
+            stale = lookup_failed or _is_stale(row["beds_updated_at"])
+            result.append(
+                {
+                    **row,
+                    "stale": stale,
+                    "is_stale": stale,
+                    "is_cached": is_cached,
+                    "lookup_failed": lookup_failed,
+                }
+            )
+    if lookup_failed and not result and raise_on_error:
+        raise EgenAPIError()
     return result
 
 
 def _combine_mkioskty(mkioskty: dict, codes: list[int]) -> bool | None:
-    """codes 중 하나라도 True면 True, 전부 False면 False, 그 외엔 None (확인 불가)."""
     values = [mkioskty.get(code) for code in codes]
     if any(value is True for value in values):
         return True
@@ -141,23 +246,22 @@ def _combine_mkioskty(mkioskty: dict, codes: list[int]) -> bool | None:
     return None
 
 
-def get_severe_acceptance(sido: str, sigungu: str, condition: str) -> list[dict]:
-    """중증질환자 수용가능정보 조회. condition에 대응하는 mkioskty 번호를 확인한다."""
+def get_severe_acceptance(
+    sido: str, sigungu: str, condition: str, *, raise_on_error: bool = False
+) -> list[dict]:
     codes = CONDITION_TO_MKIOSKTY.get(condition)
     if not codes:
-        # 대응 코드가 없는 조건(예: 중증외상)은 조회하지 않는다.
         return []
-
-    params = _build_params({"STAGE1": sido, "STAGE2": sigungu})
-    xml_text = _call("/getSrsillDissAceptncPosblInfoInqire", params)
-    if xml_text is None:
-        return []
-
     try:
-        rows = parser.parse_severe(xml_text)
-    except parser.EgenResponseError:
+        rows = _request(
+            "/getSrsillDissAceptncPosblInfoInqire",
+            _region_params(sido, sigungu),
+            parser.parse_severe,
+        )
+    except EgenAPIError:
+        if raise_on_error:
+            raise
         return []
-
     return [
         {
             "hpid": row["hpid"],
@@ -165,17 +269,31 @@ def get_severe_acceptance(sido: str, sigungu: str, condition: str) -> list[dict]
             "acceptable": _combine_mkioskty(row["mkioskty"], codes),
         }
         for row in rows
+        if row["hpid"]
     ]
 
 
-def get_er_detail(hpid: str) -> dict:
-    """기관 기본정보 조회. 실패하면 빈 dict."""
-    params = _build_params({"HPID": hpid})
-    xml_text = _call("/getEgytBassInfoInqire", params)
-    if xml_text is None:
-        return {}
-
+def get_er_detail(
+    hpid: str, *, detail_cache: dict | None = None, raise_on_error: bool = False
+) -> dict:
+    if detail_cache is not None:
+        record = _cached_detail(detail_cache, hpid)
+        if record is not None:
+            if record["lookup_failed"] and raise_on_error:
+                raise EgenAPIError()
+            return dict(record["data"])
+    lookup_failed = False
     try:
-        return parser.parse_er_detail(xml_text)
-    except parser.EgenResponseError:
-        return {}
+        detail = _request("/getEgytBassInfoInqire", {"HPID": hpid}, parser.parse_er_detail)
+        if detail.get("hpid") and detail["hpid"] != hpid:
+            raise EgenAPIError()
+    except EgenAPIError:
+        detail = {}
+        lookup_failed = True
+    if detail_cache is not None:
+        if hpid not in detail_cache and len(detail_cache) >= DETAIL_CACHE_LIMIT:
+            detail_cache.pop(next(iter(detail_cache)))
+        cache.save(detail_cache, hpid, {"data": dict(detail), "lookup_failed": lookup_failed})
+    if lookup_failed and raise_on_error:
+        raise EgenAPIError() from None
+    return detail

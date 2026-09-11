@@ -4,6 +4,8 @@ from collections.abc import Callable
 
 import streamlit as st
 
+from er_finder.guardrails.input_guard import assess_input
+from er_finder.models import EMERGENCY
 from er_finder.web.api_view import render_api_view
 from er_finder.web.components import page_style, render_header, render_pending, render_reply
 from er_finder.web.live import load_environment
@@ -31,6 +33,13 @@ def _sync_context(web: WebSession) -> bool:
     transport = st.session_state.get("transport", web.transport)
     changed = transport != web.transport
     web.set_transport(transport)
+    location = (
+        (st.session_state.get("chat_lat", 37.497942), st.session_state.get("chat_lon", 127.027621))
+        if st.session_state.get("use_coordinates", False)
+        else None
+    )
+    changed = changed or location != web.location
+    web.set_location(location)
     if changed:
         st.session_state["ui_notice"] = st.session_state["ui_error"] = None
     return changed
@@ -73,6 +82,9 @@ def _forget(web: WebSession) -> None:
     _perform(forget_all, "대화·저장 정보와 API 조회 기록을 모두 삭제했습니다.")
     st.session_state["home_address"] = ""
     st.session_state["home_consent"] = False
+    st.session_state["use_coordinates"] = False
+    st.session_state["chat_lat"] = 37.497942
+    st.session_state["chat_lon"] = 127.027621
 
 
 def _connect(web: WebSession) -> None:
@@ -95,6 +107,27 @@ def _sidebar(web: WebSession) -> None:
             format_func=lambda value: TRANSPORT_LABELS[value],
             key="transport",
         )
+        with st.expander("상담 위치 직접 지정", expanded=True):
+            st.checkbox("주소 검색 없이 좌표로 조회", key="use_coordinates")
+            st.number_input(
+                "상담 위도",
+                min_value=-90.0,
+                max_value=90.0,
+                value=37.497942,
+                format="%.6f",
+                key="chat_lat",
+                disabled=not st.session_state["use_coordinates"],
+            )
+            st.number_input(
+                "상담 경도",
+                min_value=-180.0,
+                max_value=180.0,
+                value=127.027621,
+                format="%.6f",
+                key="chat_lon",
+                disabled=not st.session_state["use_coordinates"],
+            )
+            st.caption("입력된 좌표 주변을 조회합니다. 현재 위치와 일치하는지 확인해 주세요.")
         _sync_context(web)
         status = web.backend.status()
         st.caption("● 에이전트 연결됨" if status.connected else "○ 에이전트 연결 확인 필요")
@@ -199,7 +232,11 @@ def _conversation(web: WebSession) -> None:
         st.info(status.message)
         st.caption("에이전트 연결 전에도 ‘의료기관 조회’에서 E-Gen 정보를 확인할 수 있습니다.")
     else:
-        st.success("위치와 증상을 입력해 주세요.")
+        st.success("증상을 입력해 주세요." if web.location else "위치와 증상을 입력해 주세요.")
+        if web.location:
+            st.caption(f"상담 위치 · 위도 {web.location[0]:.6f}, 경도 {web.location[1]:.6f}")
+        else:
+            st.caption("카카오 주소 검색을 사용할 수 없다면 왼쪽에서 좌표 직접 조회를 선택하세요.")
     if web.messages:
         with st.expander("대화 기록", expanded=True):
             for message in web.messages:
@@ -239,6 +276,8 @@ def _conversation(web: WebSession) -> None:
         disabled=not status.connected or bool(result and result.pending_approval),
     )
     if text:
+        if assess_input(text).triage.severity == "critical":
+            st.error(EMERGENCY)
         with st.spinner("응급실 정보를 확인하고 있습니다…"):
             _perform_current(web, lambda: web.submit(text), allow_changed=True)
         st.rerun()
