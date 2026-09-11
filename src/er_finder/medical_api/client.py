@@ -18,9 +18,7 @@ from .resilience import get_with_retry
 
 load_dotenv()
 
-BASE_URL = os.environ.get(
-    "EGEN_BASE_URL", "http://apis.data.go.kr/B552657/ErmctInfoInqireService"
-)
+BASE_URL = os.environ.get("EGEN_BASE_URL", "http://apis.data.go.kr/B552657/ErmctInfoInqireService")
 # 공공데이터포털 서비스키가 이미 percent-encoded인 경우가 있어 미리 한 번 풀어둔다.
 SERVICE_KEY = unquote(os.environ.get("EGEN_SERVICE_KEY", ""))
 TIMEOUT = float(os.environ.get("ER_REQUEST_TIMEOUT", "5"))
@@ -48,7 +46,9 @@ def _call(endpoint: str, params: dict) -> str | None:
     """E-Gen을 호출해 응답 텍스트를 돌려준다. 실패하면 None을 돌려준다."""
     url = BASE_URL.rstrip("/") + endpoint
     try:
-        return get_with_retry(url, params, timeout=TIMEOUT, max_retries=MAX_RETRIES, backoff=BACKOFF)
+        return get_with_retry(
+            url, params, timeout=TIMEOUT, max_retries=MAX_RETRIES, backoff=BACKOFF
+        )
     except httpx.HTTPError:
         return None
 
@@ -73,12 +73,16 @@ def list_nearby_ers(lat: float, lon: float, radius_km: int = 5) -> list[dict]:
     except parser.EgenResponseError:
         return []
 
-    nearby = [row for row in rows if row["distance_km"] is not None and row["distance_km"] <= radius_km]
+    nearby = [
+        row for row in rows if row["distance_km"] is not None and row["distance_km"] <= radius_km
+    ]
     nearby.sort(key=lambda row: row["distance_km"])
     return nearby
 
 
-def get_er_bed_status(sido: str, sigungu: str, hpids: list[str], bed_cache: dict | None = None) -> list[dict]:
+def get_er_bed_status(
+    sido: str, sigungu: str, hpids: list[str], bed_cache: dict | None = None
+) -> list[dict]:
     """실시간 가용병상 조회.
 
     hpids로 필터링해서 돌려준다. 60초 캐시를 쓰고, 실패하면 캐시(있으면)로 폴백한다.

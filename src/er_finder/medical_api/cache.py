@@ -22,7 +22,7 @@ def get(cache: dict, key: str, ttl: float = DEFAULT_TTL_SECONDS) -> list | None:
     if key not in cache:
         return None
     value, saved_at = cache[key]
-    if time.time() - saved_at > ttl:
+    if time.time() - saved_at >= ttl:
         return None
     return value
 
