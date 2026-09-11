@@ -1,0 +1,47 @@
+{
+  "provenance": {
+    "kind": "offline_integration_cases",
+    "medical_responses": "Existing E-Gen XML recordings dated 2026-09-11; see ../egen/README.md.",
+    "coordinates": "Recording inputs from scripts/record_egen.py, not Kakao recordings.",
+    "user_input": "Synthetic symptom text exercises retrieval rules, not clinical triage ground truth.",
+    "unrecorded_responses": "Unrecorded adjacent regions and hospital details use the explicitly synthetic empty_items_blank.xml response; no claim is made about their real availability.",
+    "clinical_validation": false,
+    "live_api_validation": false
+  },
+  "now": "2026-09-11T12:00:00+09:00",
+  "symptom_text": "가슴이 답답하고 식은땀이 나요. 응급실 찾아줘",
+  "unrecorded_response": "empty_items_blank.xml",
+  "cases": [
+    {
+      "id": "gangnam",
+      "coordinates": "37.497942, 127.027621",
+      "region": ["서울특별시", "강남구"],
+      "nearby": "nearby_gangnam.xml",
+      "beds": "bed_status_gangnam.xml",
+      "severe": "severe_gangnam.xml",
+      "expected_candidate_ids": ["A1100015"],
+      "expected_radii": [5]
+    },
+    {
+      "id": "gangneung",
+      "coordinates": "37.751853, 128.876191",
+      "region": ["강원특별자치도", "강릉시"],
+      "nearby": "nearby_gangneung.xml",
+      "beds": "bed_status_gangneung.xml",
+      "severe": "severe_gangneung.xml",
+      "expected_candidate_ids": ["A2200008"],
+      "expected_radii": [5, 10]
+    },
+    {
+      "id": "yeongwol",
+      "coordinates": "37.183740, 128.461418",
+      "region": ["강원특별자치도", "영월군"],
+      "nearby": "nearby_yeongwol.xml",
+      "beds": "bed_status_yeongwol.xml",
+      "severe": "severe_yeongwol.xml",
+      "expected_candidate_ids": [],
+      "expected_radii": [5, 10, 20, 30],
+      "expected_reason_contains": "중증 수용 여부 확인 불가"
+    }
+  ]
+}

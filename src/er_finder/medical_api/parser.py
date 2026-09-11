@@ -6,8 +6,13 @@ XML 관련 코드는 이 파일 밖으로 나가지 않게 한다.
 
 from __future__ import annotations
 
+import math
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+KOREA_TZ = ZoneInfo("Asia/Seoul")
 
 
 class EgenResponseError(Exception):
@@ -35,12 +40,29 @@ SIDO_ALIASES = {
     "경북": "경상북도",
     "경남": "경상남도",
     "제주": "제주특별자치도",
+    "강원도": "강원특별자치도",
+    "전라북도": "전북특별자치도",
 }
 
 
 def normalize_sido(name: str) -> str:
     """카카오 시도 표기를 E-Gen 시도 표기로 바꾼다. 이미 E-Gen 표기면 그대로 둔다."""
     return SIDO_ALIASES.get(name, name)
+
+
+def region_from_address(address: str | None) -> tuple[str | None, str | None]:
+    """Use the hospital's own address; never substitute the user's search region."""
+    if not address:
+        return None, None
+    parts = address.split()
+    sido = normalize_sido(parts[0])
+    if sido not in set(SIDO_ALIASES.values()):
+        return None, None
+    if sido == "세종특별자치시":
+        return sido, ""  # There is no lower municipality; omit STAGE2 on requests.
+    if len(parts) < 2 or not re.fullmatch(r"[가-힣]+[시군구]", parts[1]):
+        return sido, None
+    return sido, parts[1]
 
 
 def find_text(element: ET.Element, tag: str) -> str | None:
@@ -57,29 +79,29 @@ def to_float(value: str | None) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)
-    except ValueError:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
         return None
 
 
 def to_bed_count(value: str | None) -> int | None:
     """hvec(가용 병상 수) 규칙: 음수·빈 값은 None (api-contract.md §1.4)."""
     number = to_float(value)
-    if number is None:
+    if number is None or number < 0 or not number.is_integer():
         return None
-    count = int(number)
-    return count if count >= 0 else None
+    return int(number)
 
 
 def hvidate_to_iso(value: str | None) -> str | None:
     """hvidate(yyyyMMddHHmmss)를 ISO 8601 문자열로 바꾼다."""
-    if value is None:
+    if value is None or not re.fullmatch(r"[0-9]{14}", value):
         return None
     try:
         parsed = datetime.strptime(value, "%Y%m%d%H%M%S")
     except ValueError:
         return None
-    return parsed.isoformat()
+    return parsed.replace(tzinfo=KOREA_TZ).isoformat()
 
 
 def yn_to_bool(value: str | None) -> bool | None:
@@ -87,9 +109,9 @@ def yn_to_bool(value: str | None) -> bool | None:
     if value is None:
         return None
     value = value.strip().upper()
-    if value == "Y":
+    if value in {"Y", "가능"}:
         return True
-    if value == "N":
+    if value in {"N", "불가능"}:
         return False
     return None
 
@@ -103,13 +125,15 @@ def get_items(xml_text: str) -> list[ET.Element]:
     """
     try:
         root = ET.fromstring(xml_text)
-    except ET.ParseError as exc:
-        raise EgenResponseError(f"XML을 파싱할 수 없습니다: {exc}") from exc
+    except ET.ParseError:
+        raise EgenResponseError("E-Gen XML을 파싱할 수 없습니다.") from None
 
     result_code = find_text(root, "header/resultCode")
     if result_code != "00":
-        result_msg = find_text(root, "header/resultMsg") or ""
-        raise EgenResponseError(f"E-Gen 응답 오류 (resultCode={result_code}): {result_msg}")
+        raise EgenResponseError("E-Gen 응답 오류입니다.")
+
+    if root.find("body") is None:
+        raise EgenResponseError("E-Gen 응답 본문이 없습니다.")
 
     items_element = root.find("body/items")
     if items_element is None:
@@ -121,6 +145,8 @@ def parse_nearby(xml_text: str) -> list[dict]:
     """위치정보 조회(getEgytLcinfoInqire) 응답 -> list_nearby_ers용 dict 목록."""
     result = []
     for item in get_items(xml_text):
+        address = find_text(item, "dutyAddr")
+        sido, sigungu = region_from_address(address)
         result.append(
             {
                 "hpid": find_text(item, "hpid"),
@@ -131,6 +157,9 @@ def parse_nearby(xml_text: str) -> list[dict]:
                 "lat": to_float(find_text(item, "latitude")),
                 "lon": to_float(find_text(item, "longitude")),
                 "distance_km": to_float(find_text(item, "distance")),
+                "address": address,
+                "sido": sido,
+                "sigungu": sigungu,
             }
         )
     return result
@@ -161,7 +190,10 @@ def parse_severe(xml_text: str) -> list[dict]:
     for item in get_items(xml_text):
         mkioskty = {}
         for number in range(1, 29):
-            mkioskty[number] = yn_to_bool(find_text(item, f"mkioskty{number}"))
+            value = find_text(item, f"MKioskTy{number}")
+            if value is None:
+                value = find_text(item, f"mkioskty{number}")
+            mkioskty[number] = yn_to_bool(value)
         result.append(
             {
                 "hpid": find_text(item, "hpid"),
@@ -194,6 +226,7 @@ def parse_er_detail(xml_text: str) -> dict:
     # (api-contract.md §1.6, 팀 합의). er_tel/main_tel이 당분간 같은 값이 된다.
     main_tel = find_text(item, "dutyTel1")
     return {
+        "hpid": find_text(item, "hpid"),
         "name": find_text(item, "dutyName"),
         "address": find_text(item, "dutyAddr"),
         "er_tel": main_tel,

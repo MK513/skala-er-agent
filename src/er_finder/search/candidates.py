@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from er_finder.models import HospitalCandidate
 from er_finder.safety import safe_data
@@ -11,7 +11,7 @@ def is_stale(timestamp: str | None, now: datetime) -> bool:
         parsed = datetime.fromisoformat(timestamp)
         if parsed.tzinfo is None:
             return True
-        age = (now.astimezone(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+        age = (now.astimezone(UTC) - parsed.astimezone(UTC)).total_seconds()
         return age > 900 or age < -60
     except (TypeError, ValueError):
         return True

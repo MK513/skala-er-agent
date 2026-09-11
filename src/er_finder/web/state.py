@@ -3,13 +3,16 @@
 import re
 from dataclasses import dataclass, field
 
+from er_finder.guardrails.pii import mask_pii
 from er_finder.memory.store import ConsentRequiredError
+from er_finder.search.coordinates import parse_coordinates
 from er_finder.web.contracts import Backend, Message, WebResult
 from er_finder.web.live import RunnerBackend
 
 
 def _display_text(text: str) -> str:
     """Limited display redaction for common Korean IDs/phones, not a safety classifier."""
+    text = mask_pii(text)
     text = re.sub(r"(?<!\d)\d{6}[\s-]?[1-8]\d{6}(?!\d)", "[주민번호 가림]", text)
     return re.sub(r"(?<!\d)0\d{1,2}[\s.-]?\d{3,4}[\s.-]?\d{4}(?!\d)", "[전화번호 가림]", text)
 
@@ -20,6 +23,7 @@ class WebSession:
     messages: list[Message] = field(default_factory=list)
     result: WebResult | None = None
     transport: str = "car"
+    location: tuple[float, float] | None = None
     _last_query: str | None = field(default=None, repr=False)
 
     def _receive(self, result: WebResult) -> None:
@@ -30,20 +34,25 @@ class WebSession:
             text = result.reply.next_action
         else:
             text = result.note or "결과를 확인할 수 없습니다."
-        self.messages.append(Message("assistant", text))
+        message = Message("assistant", text)
+        if not self.messages or self.messages[-1] != message:
+            self.messages.append(message)
 
     def submit(self, text: str) -> None:
         text = _display_text(text.strip())
         if not text:
             return
         self.messages.append(Message("user", text))
+        query = text
+        if self.location is not None:
+            query = f"{self.location[0]:.6f}, {self.location[1]:.6f} {text}"
         try:
-            result = self.backend.chat(text, transport=self.transport)
+            result = self.backend.chat(query, transport=self.transport)
         except Exception:
             self.backend.reset()
             result = WebResult(note="서비스를 실행하지 못했습니다. 잠시 후 다시 시도해 주세요.")
         if result.pending_approval is None:
-            self._last_query = text
+            self._last_query = query
         self._receive(result)
 
     def select_hospital(self, hpid: str) -> None:
@@ -72,6 +81,7 @@ class WebSession:
         self.messages.clear()
         self.result = None
         self._last_query = None
+        self.location = None
 
     def refresh(self) -> None:
         if not self._last_query:
@@ -91,6 +101,15 @@ class WebSession:
         if transport != self.transport:
             self.reset()
             self.transport = transport
+
+    def set_location(self, location: tuple[float, float] | None) -> None:
+        if location is not None:
+            lat, lon = location
+            if parse_coordinates(f"{lat:.6f}, {lon:.6f}") is None:
+                raise ValueError("유효한 좌표를 입력하세요.")
+        if location != self.location:
+            self.reset()
+            self.location = location
 
     def _notice(self, note: str) -> None:
         # Preserve any pending approval while changing the independent address preference.

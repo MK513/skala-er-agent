@@ -101,8 +101,19 @@ class ERFinderStore:
         InMemoryStore.search()는 저장 순서를 보장하지 않으므로, 전체를
         가져와 saved_at 기준으로 정렬한 뒤 limit을 적용한다.
         """
-        items = self._store.search(self._visits_namespace())
-        visits = [item.value for item in items]
+        if limit < 0:
+            raise ValueError("limit은 0 이상이어야 합니다.")
+        if limit == 0:
+            return []
+        visits = []
+        page_size = 100
+        offset = 0
+        while True:
+            items = self._store.search(self._visits_namespace(), limit=page_size, offset=offset)
+            visits.extend(item.value for item in items)
+            if len(items) < page_size:
+                break
+            offset += len(items)
         visits.sort(key=lambda v: v.get("saved_at", ""), reverse=True)
         return visits[:limit]
 

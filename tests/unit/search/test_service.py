@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
+from tests.unit.search.provider_fixture import OfflineSearchProvider
 
 from er_finder.search import SearchSession, ToolOrderError
-from tests.unit.search.provider_fixture import OfflineSearchProvider
 
 
 def finish(s):
@@ -91,28 +91,27 @@ def test_untrusted_output_is_checked_per_hospital():
     raw["hospitals"][0]["er_tel"] = "02-999-9999"
     raw["next_action"] = "심근경색입니다. 약을 드세요."
     checked = s.check_evidence(raw)
-    assert checked.hospitals[0].name == "확인 불가"
-    assert checked.hospitals[0].er_beds_available is None
-    assert checked.hospitals[0].er_tel is None
+    assert checked.hospitals[0].name == r.hospitals[0].name
+    assert checked.hospitals[0].er_beds_available == r.hospitals[0].er_beds_available
+    assert checked.hospitals[0].er_tel == r.hospitals[0].er_tel
     assert "심근경색입니다" not in checked.next_action
     assert s.evidence_corrections >= 3
 
 
 def test_timestamp_staleness_and_no_invented_telephone():
-    s = SearchSession(OfflineSearchProvider(), now=lambda: datetime(2027, 1, 1, tzinfo=timezone.utc))
+    s = SearchSession(OfflineSearchProvider(), now=lambda: datetime(2027, 1, 1, tzinfo=UTC))
     s.begin("강남구 역삼동 손가락 부음")
     r = finish(s)
     assert all(h.stale for h in r.hospitals)
     assert all(h.er_tel is None for h in r.hospitals)
+
 
 def test_severe_trauma_api_limitation_message():
     s = SearchSession(OfflineSearchProvider())
 
     s.begin("강남구 역삼동 중증외상 환자입니다")
 
-    s.triage = s.triage.model_copy(
-        update={"condition": "중증외상"}
-    )
+    s.triage = s.triage.model_copy(update={"condition": "중증외상"})
 
     s.location = {
         "lat": 37.5,
@@ -139,14 +138,13 @@ def test_severe_trauma_api_limitation_message():
     assert "정확히 확인할 수 없어" in reply.no_candidate_reason
     assert "119" in reply.next_action
 
+
 def test_severe_trauma_without_beds_uses_general_no_candidate_message():
     s = SearchSession(OfflineSearchProvider())
 
     s.begin("강남구 역삼동 중증외상 환자입니다")
 
-    s.triage = s.triage.model_copy(
-        update={"condition": "중증외상"}
-    )
+    s.triage = s.triage.model_copy(update={"condition": "중증외상"})
 
     s.location = {
         "lat": 37.5,
@@ -174,3 +172,27 @@ def test_severe_trauma_without_beds_uses_general_no_candidate_message():
     assert "후보가 없습니다" in reply.no_candidate_reason
     assert "정확히 확인할 수 없어" not in reply.no_candidate_reason
     assert "119" in reply.next_action
+
+
+@pytest.mark.parametrize(
+    "proposal", [{"hospitals": None}, {"hospitals": "invalid"}, {"hospitals": [{"hpid": []}]}, None]
+)
+def test_malformed_proposal_preserves_verified_source_reply(proposal):
+    session = SearchSession(OfflineSearchProvider())
+    session.begin("강남구 역삼동 손가락이 부었어요")
+    canonical = finish(session)
+    assert session.check_evidence(proposal) == canonical
+
+
+def test_lookup_failure_stops_retries_and_does_not_claim_no_hospitals():
+    session = SearchSession(OfflineSearchProvider())
+    session.begin("강남구 역삼동 손가락이 부었어요")
+    finish(session)
+    session.fail_lookup()
+    assert session.next_calls() == []
+    reply = session.make_reply()
+    assert not reply.hospitals
+    assert "조회" in reply.no_candidate_reason and "실패" in reply.no_candidate_reason
+    assert "후보가 없습니다" not in reply.no_candidate_reason
+    session.begin("강남구 역삼동 손가락이 부었어요")
+    assert session.lookup_error is None and session.next_calls()

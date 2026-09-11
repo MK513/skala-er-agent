@@ -15,11 +15,13 @@ from dotenv import load_dotenv
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
+from er_finder.config import Settings
 from er_finder.memory.store import ERFinderStore
 from er_finder.memory.visit_plan import PendingVisitPlan
 from er_finder.web.contracts import UIReply, WebResult
 
 REQUIRED_KEYS = ("OPENAI_API_KEY", "KAKAO_REST_API_KEY", "EGEN_SERVICE_KEY")
+AGENT_REQUIRED_KEYS = ("OPENAI_API_KEY", "EGEN_SERVICE_KEY")
 _MESSAGES = {
     "not_connected": "실제 서비스에 아직 연결하지 않았습니다. 연결 확인을 실행해 주세요.",
     "keys": "필수 API 키가 설정되지 않았습니다. 설정 상태를 확인해 주세요.",
@@ -65,24 +67,27 @@ def _default_runner_factory(**kwargs: Any) -> Any:
     classifier_module = importlib.import_module("er_finder.guardrails.triage")
     model_module = importlib.import_module("langchain_openai")
     provider_module = importlib.import_module("er_finder.web.provider")
-    timeout = float(os.environ.get("ER_REQUEST_TIMEOUT", "5"))
+    settings = Settings()
+    timeout = settings.model_timeout
     http_client = httpx.Client(timeout=timeout)
     provider = None
     try:
-        provider = provider_module.LiveProvider(kakao_key=os.environ["KAKAO_REST_API_KEY"])
+        provider = provider_module.LiveProvider(kakao_key=os.environ.get("KAKAO_REST_API_KEY", ""))
         model = model_module.ChatOpenAI(
-            model=os.environ.get("ER_MAIN_MODEL", "gpt-5-mini"),
-            reasoning_effort=os.environ.get("ER_MAIN_REASONING_EFFORT", "low"),
-            max_tokens=int(os.environ.get("ER_MAIN_MAX_OUTPUT_TOKENS", "1500")),
+            model=settings.main_model,
+            reasoning_effort=settings.main_reasoning_effort,
+            max_tokens=settings.main_max_output_tokens,
             http_client=http_client,
             timeout=timeout,
+            max_retries=0,
         )
         classifier_model = model_module.ChatOpenAI(
-            model=os.environ.get("ER_CLASSIFIER_MODEL", "gpt-4o-mini"),
-            temperature=float(os.environ.get("ER_CLASSIFIER_TEMPERATURE", "0")),
-            max_tokens=int(os.environ.get("ER_CLASSIFIER_MAX_TOKENS", "200")),
+            model=settings.classifier_model,
+            temperature=settings.classifier_temperature,
+            max_tokens=settings.classifier_max_tokens,
             http_client=http_client,
             timeout=timeout,
+            max_retries=0,
         )
         classifier = classifier_module.InputClassifier(classifier_model)
         runner = runner_module.ERFinder(
@@ -162,7 +167,8 @@ class RunnerBackend:
         if transport not in {"car", "walk", "transit"}:
             self._invalidate("contract")
             return self.status()
-        if not all(credential_status().values()):
+        checks = credential_status()
+        if not all(checks.get(key, False) for key in AGENT_REQUIRED_KEYS):
             self._invalidate("keys")
             return self.status()
         if self._runner is not None and transport == self._transport:

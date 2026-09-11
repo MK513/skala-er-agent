@@ -106,13 +106,13 @@ def test_status_checks_keys_without_importing_or_constructing_runner(live, monke
     def forbidden(**kwargs):
         pytest.fail("status must not construct the agent")
 
-    monkeypatch.setenv("KAKAO_REST_API_KEY", " ")
+    monkeypatch.setenv("OPENAI_API_KEY", " ")
     backend = live.RunnerBackend(runner_factory=forbidden)
     status = backend.status()
     assert not status.connected
     assert status.checks == {
-        "OPENAI_API_KEY": True,
-        "KAKAO_REST_API_KEY": False,
+        "OPENAI_API_KEY": False,
+        "KAKAO_REST_API_KEY": True,
         "EGEN_SERVICE_KEY": True,
     }
     assert "offline-test-value" not in repr(status)
@@ -146,13 +146,15 @@ def test_factory_failures_are_safe_and_do_not_return_preview_data(live):
     assert "/private/secret" not in status.message + result.note
 
 
-def test_default_factory_reports_existing_backend_failure_without_patching_modules(live):
-    # Current repository has unresolved runner imports. No provider or model is called.
+def test_default_factory_connects_actual_modules_without_network_or_kakao(live, monkeypatch):
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "")
     backend = live.RunnerBackend()
     status = backend.connect()
-    assert not status.connected
-    assert status.category in {"module", "contract"}
-    assert backend.select_hospital("DEMO-001").reply is None
+    assert status.connected and status.category == "ready"
+    assert not status.checks["KAKAO_REST_API_KEY"]
+    assert backend.select_hospital("FORGED").reply is None
+    backend._invalidate("not_connected")
+    assert not backend.status().connected
 
 
 def test_injected_factory_must_supply_the_runner_contract(live):

@@ -1,0 +1,17 @@
+{
+  "fixture_provenance": {
+    "kind": "synthetic",
+    "source": "Extracted from the existing test_geocoder.py keyword fallback response.",
+    "live_recording": false
+  },
+  "meta": {"total_count": 1, "is_end": true},
+  "documents": [
+    {
+      "place_name": "역삼역",
+      "address_name": "서울 강남구 역삼동 804",
+      "road_address_name": "서울 강남구 테헤란로 156",
+      "x": "127.0365",
+      "y": "37.5007"
+    }
+  ]
+}
