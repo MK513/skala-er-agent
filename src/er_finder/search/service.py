@@ -6,7 +6,7 @@ from datetime import datetime
 from threading import Event, RLock
 from zoneinfo import ZoneInfo
 
-from er_finder.memory.state import SessionState
+from er_finder.memory.state import ERFinderState
 from er_finder.models import DISCLAIMER, ERSearchReply
 from er_finder.safety import assess_input, mask_pii, sanitize_prose
 from er_finder.search.candidates import select_candidates
@@ -51,7 +51,7 @@ def extract_location(text: str) -> str | None:
     return m[1].strip() if m else None
 
 
-class SearchSession(SessionState):
+class SearchSession(ERFinderState):
     def __init__(self, provider, transport="car", now=None):
         super().__init__()
         self.provider = provider
@@ -62,6 +62,9 @@ class SearchSession(SessionState):
         self.symptom_text = ""
         self.location_query = None
         self.assessment = assess_input("")
+        self.triage = self.assessment.triage
+        self.facilities, self.beds, self.acceptance, self.details = {}, {}, {}, {}
+        self.audit = []
         self.radii = radius_sequence(transport)
         self.radius_index = 0
         self.listed = self.beds_checked = self.severe_checked = False
@@ -73,6 +76,15 @@ class SearchSession(SessionState):
         self.severe_region_cache = {}
         self.beds_ready = Event()
         self.allow_severe_batch = False
+
+    @property
+    def location(self):
+        """Keep the existing search API backed by memory's current_location field."""
+        return self.current_location
+
+    @location.setter
+    def location(self, value):
+        self.current_location = value
 
     @property
     def radius(self):

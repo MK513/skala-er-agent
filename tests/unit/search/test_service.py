@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from er_finder.demo_provider import DemoProvider
 from er_finder.search import SearchSession, ToolOrderError
+from tests.unit.search.provider_fixture import OfflineSearchProvider
 
 
 def finish(s):
@@ -16,18 +16,18 @@ def finish(s):
     raise AssertionError("search did not terminate")
 
 
-def test_gangnam_urgent_matches_ground_truth():
-    s = SearchSession(DemoProvider())
+def test_gangnam_urgent_filters_and_orders_fixture_candidates():
+    s = SearchSession(OfflineSearchProvider())
     s.begin("가슴이 답답하고 식은땀이 나요. 강남구 역삼동")
     r = finish(s)
     assert r.severity == "urgent"
-    assert [h.hpid for h in r.hospitals] == ["DEMO-GN-1", "DEMO-GN-2", "DEMO-GN-5"]
+    assert [h.hpid for h in r.hospitals] == ["TEST-GN-1", "TEST-GN-2", "TEST-GN-5"]
     assert all(h.accepts_condition == "yes" and h.er_beds_available > 0 for h in r.hospitals)
     assert r.search_radius_km == 5
 
 
 def test_walk_skips_severe_and_starts_three():
-    s = SearchSession(DemoProvider(), transport="walk")
+    s = SearchSession(OfflineSearchProvider(), transport="walk")
     s.begin("경포대 근처, 아이 이마가 찢어졌어요")
     r = finish(s)
     assert r.hospitals and r.search_radius_km == 3
@@ -35,7 +35,7 @@ def test_walk_skips_severe_and_starts_three():
 
 
 def test_expansion_exactly_three_and_119():
-    s = SearchSession(DemoProvider())
+    s = SearchSession(OfflineSearchProvider())
     s.begin("영월군 상동읍, 할머니가 숨쉬기 힘들어해요")
     r = finish(s)
     assert not r.hospitals and r.call_119_first and r.no_candidate_reason
@@ -43,19 +43,23 @@ def test_expansion_exactly_three_and_119():
 
 
 def test_location_reuse_and_reset():
-    s = SearchSession(DemoProvider())
+    s = SearchSession(OfflineSearchProvider())
     s.begin("강남구 역삼동 손가락이 부었어요")
     finish(s)
+    assert s.location is s.current_location
     s.begin("소아과 응급실만 다시 보여줘")
     r = finish(s)
     assert "geocode" not in [c["name"] for c in s.audit]
     assert "소아" in r.next_action
     s.clear()
-    assert s.location is None and not s.candidates
+    assert s.location is None and s.current_location is None and not s.candidates
+    assert s.facilities == s.beds == s.acceptance == s.details == {}
+    assert s.audit == []
+    assert s.status()["draft"]["hospitals"] == []
 
 
 def test_missing_unknown_location_and_invalid_tool_order():
-    s = SearchSession(DemoProvider())
+    s = SearchSession(OfflineSearchProvider())
     s.begin("손가락이 부었어요")
     assert not s.next_calls()
     assert "위치" in s.make_reply().next_action
@@ -67,7 +71,7 @@ def test_missing_unknown_location_and_invalid_tool_order():
 
 
 def test_model_cannot_change_coordinates_skip_radius_or_forge_ids():
-    s = SearchSession(DemoProvider())
+    s = SearchSession(OfflineSearchProvider())
     s.begin("강남구 역삼동 발목 삐었어요")
     s.geocode(s.location_query)
     with pytest.raises(ToolOrderError):
@@ -78,7 +82,7 @@ def test_model_cannot_change_coordinates_skip_radius_or_forge_ids():
 
 
 def test_untrusted_output_is_checked_per_hospital():
-    s = SearchSession(DemoProvider())
+    s = SearchSession(OfflineSearchProvider())
     s.begin("강남구 역삼동 발목 삐었어요")
     r = finish(s)
     raw = r.model_dump()
@@ -95,14 +99,14 @@ def test_untrusted_output_is_checked_per_hospital():
 
 
 def test_timestamp_staleness_and_no_invented_telephone():
-    s = SearchSession(DemoProvider(), now=lambda: datetime(2027, 1, 1, tzinfo=timezone.utc))
+    s = SearchSession(OfflineSearchProvider(), now=lambda: datetime(2027, 1, 1, tzinfo=timezone.utc))
     s.begin("강남구 역삼동 손가락 부음")
     r = finish(s)
     assert all(h.stale for h in r.hospitals)
     assert all(h.er_tel is None for h in r.hospitals)
 
 def test_severe_trauma_api_limitation_message():
-    s = SearchSession(DemoProvider())
+    s = SearchSession(OfflineSearchProvider())
 
     s.begin("강남구 역삼동 중증외상 환자입니다")
 
@@ -136,7 +140,7 @@ def test_severe_trauma_api_limitation_message():
     assert "119" in reply.next_action
 
 def test_severe_trauma_without_beds_uses_general_no_candidate_message():
-    s = SearchSession(DemoProvider())
+    s = SearchSession(OfflineSearchProvider())
 
     s.begin("강남구 역삼동 중증외상 환자입니다")
 

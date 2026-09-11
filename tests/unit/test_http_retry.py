@@ -76,3 +76,64 @@ def test_request_with_transport_retries_404_raises_immediately_without_retry():
             None, "GET", "http://test/api", max_retries=2, backoff=0, sleep=lambda _: None
         )
     assert route.call_count == 1  # 재시도 없이 바로 실패
+
+
+def test_connect_error_retries_then_returns_the_successful_response():
+    attempts = []
+    slept = []
+
+    def handler(request):
+        attempts.append(request)
+        if len(attempts) < 3:
+            raise httpx.ConnectError("temporary connection failure", request=request)
+        return httpx.Response(200, text="recovered")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        response = request_with_transport_retries(
+            client, "GET", "https://offline.test/api", backoff=0.25, sleep=slept.append
+        )
+
+    assert response.text == "recovered"
+    assert len(attempts) == 3
+    assert slept == [0.25, 0.25]
+
+
+def test_persistent_connect_error_stops_at_the_configured_retry_limit():
+    attempts = []
+    slept = []
+
+    def handler(request):
+        attempts.append(request)
+        raise httpx.ConnectError("still unavailable", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(httpx.ConnectError):
+            request_with_transport_retries(
+                client,
+                "GET",
+                "https://offline.test/api",
+                max_retries=1,
+                backoff=0.25,
+                sleep=slept.append,
+            )
+
+    assert len(attempts) == 2
+    assert slept == [0.25]
+
+
+def test_unsupported_protocol_is_not_retried_as_a_connection_failure():
+    attempts = []
+    slept = []
+
+    def handler(request):
+        attempts.append(request)
+        raise httpx.UnsupportedProtocol("unsupported protocol", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(httpx.UnsupportedProtocol):
+            request_with_transport_retries(
+                client, "GET", "https://offline.test/api", sleep=slept.append
+            )
+
+    assert len(attempts) == 1
+    assert slept == []
