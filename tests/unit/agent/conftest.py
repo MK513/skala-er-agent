@@ -165,7 +165,7 @@ def make_reply():
             search_radius_km=5,
             hospitals=[],
             no_candidate_reason="후보를 찾지 못했습니다",
-            data_timestamp="2026-01-01T00:00:00",
+            data_timestamp="2026-01-01T00:00:00+09:00",
             next_action="가까운 병원에 전화로 확인하세요",
             disclaimer="응급실 상황은 수시로 변하므로 방문 전 전화 확인을 권장합니다",
         )
@@ -183,10 +183,12 @@ def make_hospital():
             name="서울병원",
             distance_km=1.2,
             er_beds_available=2,
-            beds_updated_at="2026-01-01T00:00:00",
+            beds_updated_at="2026-01-01T00:00:00+09:00",
             accepts_condition="unknown",
             er_tel="02-000-0000",
             address="서울시 어딘가",
+            is_cached=False,
+            is_stale=False,
         )
         data.update(overrides)
         return HospitalCandidate(**data)

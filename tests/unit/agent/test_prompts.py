@@ -8,15 +8,14 @@ from er_finder.agent.prompts import CLASSIFIER_PROMPT, SYSTEM_PROMPT
 from er_finder.models import Condition, ERSearchReply
 
 
-def test_system_prompt_contains_the_fixed_disclaimer_sentence():
+# SYSTEM_PROMPT에 스키마의 고정 disclaimer 문구와 119 안내가 그대로 들어있는지 확인한다.
+def test_system_prompt_contains_fixed_disclaimer_and_119_guidance():
     (disclaimer,) = ERSearchReply.model_fields["disclaimer"].annotation.__args__
     assert disclaimer in SYSTEM_PROMPT
+    assert "119" in SYSTEM_PROMPT
 
 
+# CLASSIFIER_PROMPT가 Condition에 정의된 모든 질환 값을 빠짐없이 언급하는지 확인한다.
 def test_classifier_prompt_mentions_every_condition_value():
     for condition in Condition.__args__:
         assert condition in CLASSIFIER_PROMPT
-
-
-def test_system_prompt_mentions_119_for_critical_cases():
-    assert "119" in SYSTEM_PROMPT
