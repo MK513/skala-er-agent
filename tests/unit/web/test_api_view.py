@@ -105,7 +105,9 @@ def test_submit_uses_new_coordinates_and_radius_in_the_same_event(nearby_transpo
 def test_empty_or_failed_source_does_not_claim_no_hospitals(monkeypatch):
     monkeypatch.setenv("EGEN_SERVICE_KEY", "offline-synthetic-key")
     from er_finder import http_retry
+    from er_finder.medical_api import client
 
+    monkeypatch.setattr(client, "SERVICE_KEY", "offline-synthetic-key")
     empty_xml = (FIXTURES / "empty_items_blank.xml").read_text()
     response_transport = httpx.MockTransport(lambda request: httpx.Response(200, text=empty_xml))
     with httpx.Client(transport=response_transport) as transport:
