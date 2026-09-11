@@ -1,0 +1,52 @@
+from datetime import datetime, timezone
+
+from er_finder.models import HospitalCandidate
+from er_finder.safety import safe_data
+
+
+def is_stale(timestamp: str | None, now: datetime) -> bool:
+    if not timestamp:
+        return True
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+        if parsed.tzinfo is None:
+            return True
+        age = (now.astimezone(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+        return age > 900 or age < -60
+    except (TypeError, ValueError):
+        return True
+
+
+def select_candidates(facilities, beds, acceptance, details, condition, now):
+    selected = []
+    for hpid, facility in facilities.items():
+        bed = beds.get(hpid, {})
+        count = bed.get("er_beds_available")
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            continue
+        acceptable = acceptance.get(hpid, {}).get("acceptable")
+        if condition and acceptable is not True:
+            continue
+        detail = details.get(hpid, {})
+        tel = detail.get("er_tel") or bed.get("er_tel") or facility.get("er_tel")
+        safe_tel = safe_data(tel) if tel else None
+        if safe_tel == "확인 불가":
+            safe_tel = None
+        selected.append(
+            HospitalCandidate(
+                hpid=hpid,
+                name=safe_data(facility.get("name")),
+                distance_km=facility["distance_km"],
+                er_beds_available=count,
+                beds_updated_at=bed.get("beds_updated_at"),
+                accepts_condition="yes" if condition else "unknown",
+                er_tel=safe_tel,
+                address=safe_data(detail.get("address") or facility.get("address")),
+                is_cached=bool(bed.get("is_cached", False)),
+                is_stale=is_stale(bed.get("beds_updated_at"), now)
+                or bool(bed.get("is_stale", False)),
+            )
+        )
+    # Sort using the full precision distance, then round only for display.
+    selected.sort(key=lambda h: (facilities[h.hpid]["distance_km"], h.hpid))
+    return selected[:3]
