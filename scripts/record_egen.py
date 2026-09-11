@@ -62,7 +62,7 @@ REGIONS: dict[str, Region] = {
         label="gangneung",
         lat=37.751853,
         lon=128.876191,
-        sido="강원도",
+        sido="강원특별자치도",  # 2023년 개칭. "강원도"로 조회하면 STAGE1 필터가 0건 나옴
         sigungu="강릉시",
     ),
     "yeongwol": Region(
@@ -70,7 +70,7 @@ REGIONS: dict[str, Region] = {
         label="yeongwol",
         lat=37.183740,
         lon=128.461418,
-        sido="강원도",
+        sido="강원특별자치도",  # 2023년 개칭. "강원도"로 조회하면 STAGE1 필터가 0건 나옴
         sigungu="영월군",
     ),
 }
