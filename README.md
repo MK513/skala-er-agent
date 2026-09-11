@@ -62,3 +62,5 @@ uv run --frozen python scripts/verify.py --require-integration
 - [검증 기록](docs/verification.md)
 - [공통 인터페이스](docs/interfaces.md)
 - [e97341a 시점 통합 검토](docs/review-2026-09-11.md): 이전 커밋의 검토 기록이며 현재 오류 목록과 구분합니다.
+
+CI는 `Web and verification tooling`(6번)과 `All modules integration`(전체)을 각각 실행합니다. 6번 통과를 전체 서비스 통과로 해석하지 않습니다. 로컬에서 담당 범위만 실행하려면 `python scripts/verify.py --scope web`을 사용합니다. 기본 실행은 전체 범위입니다.

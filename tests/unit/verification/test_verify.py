@@ -91,8 +91,9 @@ def test_preflight_allows_empty_exception_class_in_implemented_module(verify, tm
 
 
 @pytest.mark.parametrize("returncode,expected_status", [(0, "PASS"), (1, "FAIL"), (5, "NO_TESTS")])
+@pytest.mark.parametrize("scope", ["all", "web"])
 def test_report_preserves_pytest_exit_and_does_not_claim_integration(
-    verify, tmp_path, monkeypatch, returncode, expected_status
+    verify, tmp_path, monkeypatch, capsys, returncode, expected_status, scope
 ):
     output = tmp_path / "results"
 
@@ -104,13 +105,21 @@ def test_report_preserves_pytest_exit_and_does_not_claim_integration(
         assert "scripts.verify" in command
         assert "OPENAI_API_KEY" not in kwargs["env"]
         assert "ER_DEMO_MODE" not in kwargs["env"]
+        targets = [part for part in command if part.startswith("tests/")]
+        assert targets == (
+            ["tests/unit/web", "tests/integration", "tests/unit/verification"]
+            if scope == "web"
+            else []
+        )
         (output / "junit.xml").write_text(
             '<testsuite><testcase name="memory_check"/></testsuite>', encoding="utf-8"
         )
         return subprocess.CompletedProcess(command, returncode, "pytest output", "")
 
     monkeypatch.setattr(verify.subprocess, "run", run)
-    code = verify.run_verification(tmp_path, output, timeout=5, require_integration=False)
+    code = verify.run_verification(
+        tmp_path, output, timeout=5, require_integration=False, scope=scope
+    )
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
     assert report["local_tests"]["status"] == expected_status
     assert report["local_tests"]["exit_code"] == returncode
@@ -118,6 +127,10 @@ def test_report_preserves_pytest_exit_and_does_not_claim_integration(
     assert report["integration"]["blockers"]
     assert report["provenance"]["clinical_validation"] is False
     assert report["provenance"]["live_api_tests"] == "EXCLUDED"
+    assert report["test_scope"] == scope
+    assert ("web UI" in report["provenance"]["scope"]) is (scope == "web")
+    if expected_status == "FAIL":
+        assert "pytest output" in capsys.readouterr().out
     assert (code == 0) is (returncode == 0)
 
 

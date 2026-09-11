@@ -41,3 +41,9 @@
 최종 6번 검증: 화면·상태·어댑터·provider·API 조회·검증 도구 76개 PASS. 실제 기존 E-Gen client로 반경 5km 내 기관 9곳, 선택 기관의 상세 주소와 대표전화 조회를 확인했다. 카카오는 추가 진단하지 않았다.
 
 최신 전체 실행은 161 PASS, 검색 테스트 assertion 실패 1건, 기존 모듈 수집 오류 5건으로 FAIL이다. 검색의 재시도 기대 횟수와 실제 횟수 차이 및 공통 모델·상태 import 문제는 다른 담당 범위로 남겼다.
+
+## CI 담당 범위 구분
+
+`Web and verification tooling`은 `--scope web`으로 6번 화면·어댑터·검증 도구를 검사한다. `All modules integration`은 기본 전체 검사와 동일하게 `--scope all`을 실행한다. 어느 쪽도 실패를 무시하거나 성공으로 바꾸지 않는다. 전체 통합은 다른 모듈의 오류가 수정될 때까지 실패할 수 있다. 각 결과는 `verification-web`, `verification-integration` 아티팩트에 별도로 보존된다. 실패한 pytest 출력도 Actions 단계 로그에 표시한다.
+
+확인한 원격 실행 `34565779119`는 161 PASS, assertion 실패 1건, 수집 오류 5건이었다. 화면의 SyntaxWarning이 종료 코드 1의 원인이 아니며, 기존 공통 모델·상태 import 오류와 검색 재시도 기대 횟수 차이가 원인이다.

@@ -181,7 +181,18 @@ def _text(value: str | bytes | None) -> str:
     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
 
 
-def run_verification(root: Path, output: Path, *, timeout: float, require_integration: bool) -> int:
+def run_verification(
+    root: Path,
+    output: Path,
+    *,
+    timeout: float,
+    require_integration: bool,
+    scope: str = "all",
+) -> int:
+    targets = {
+        "all": (),
+        "web": ("tests/unit/web", "tests/integration", "tests/unit/verification"),
+    }[scope]
     root, output = root.resolve(), output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     junit = output / "junit.xml"
@@ -196,6 +207,7 @@ def run_verification(root: Path, output: Path, *, timeout: float, require_integr
         "not live",
         "--continue-on-collection-errors",
         f"--junitxml={junit}",
+        *targets,
     ]
     # Do not forward API credentials, tracing flags, or ambient pytest options.
     environment = {
@@ -249,8 +261,13 @@ def run_verification(root: Path, output: Path, *, timeout: float, require_integr
         "git_commit": _git_value(root, "rev-parse", "HEAD"),
         "working_tree_dirty": None if dirty is None else bool(dirty),
         "python": sys.version.split()[0],
+        "test_scope": scope,
         "provenance": {
-            "scope": "offline module tests, API and runner UI contracts, verification tooling",
+            "scope": (
+                "web UI and adapter contracts, verification tooling"
+                if scope == "web"
+                else "all offline module tests, API and runner UI contracts, verification tooling"
+            ),
             "live_api_tests": "EXCLUDED",
             "network_policy": "Python socket DNS/TCP/UDP calls blocked in pytest",
             "clinical_validation": False,
@@ -274,7 +291,9 @@ def run_verification(root: Path, output: Path, *, timeout: float, require_integr
     (output / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"Local tests: {status}; integration: {report['integration']['status']}")
+    if status != "PASS" and log:
+        print(log, end="" if log.endswith("\n") else "\n")
+    print(f"Scope: {scope}; local tests: {status}; integration: {report['integration']['status']}")
     print(f"Report: {output / 'report.json'}")
     if status != "PASS":
         return 1
@@ -285,6 +304,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("verification-results"))
     parser.add_argument("--timeout", type=float, default=120)
+    parser.add_argument(
+        "--scope",
+        choices=("all", "web"),
+        default="all",
+        help="Select all offline tests (default) or only web/adapter and verification tests.",
+    )
     parser.add_argument(
         "--require-integration",
         action="store_true",
@@ -298,6 +323,7 @@ def main() -> int:
         args.output,
         timeout=args.timeout,
         require_integration=args.require_integration,
+        scope=args.scope,
     )
 
 
