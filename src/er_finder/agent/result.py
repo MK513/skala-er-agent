@@ -12,6 +12,7 @@ class ChatResult:
     text: str
     pending_approval: dict | None = None
     note: str | None = None
+    model_calls: int = 0
 
 
 @dataclass
@@ -43,7 +44,7 @@ def resolve_turn_outcome(graph, inputs, config, context, session, history_note=N
     return TurnOutcome(reply=reply, note=note, pending=pending)
 
 
-def build_chat_result(outcome: TurnOutcome, visit) -> ChatResult:
+def build_chat_result(outcome: TurnOutcome, visit, model_calls: int = 0) -> ChatResult:
     """TurnOutcome과 방문 계획 상태를 합쳐 ChatResult를 반환한다."""
     pending_data = dict(visit.pending) if outcome.pending else None
 
@@ -52,4 +53,5 @@ def build_chat_result(outcome: TurnOutcome, visit) -> ChatResult:
         text=render_reply(outcome.reply, note=outcome.note, pending=pending_data),
         pending_approval=pending_data,
         note=outcome.note,
+        model_calls=model_calls,
     )

@@ -103,6 +103,8 @@ def runner_module(monkeypatch):
         EmergencyInputGuard=lambda *a, **k: MagicMock(name="EmergencyInputGuard"),
         EvidenceCheckMiddleware=lambda *a, **k: MagicMock(name="EvidenceCheckMiddleware"),
         ProfileDynamicPrompt=lambda *a, **k: MagicMock(name="ProfileDynamicPrompt"),
+        ToolSafetyMiddleware=lambda *a, **k: MagicMock(name="ToolSafetyMiddleware"),
+        ModelCounter=lambda *a, **k: SimpleNamespace(calls=0),
     )
     _register_stub_module("er_finder.guardrails.pii", PII_PATTERN=object())
     _register_stub_module("er_finder.guardrails.triage", InputClassifier=_StubInputClassifier)
@@ -149,7 +151,8 @@ def make_finder(runner_module):
 
         fake_graph = MagicMock(name="graph")
         fake_graph.invoke.return_value = {"structured_response": None}
-        runner_module.build_graph = MagicMock(return_value=fake_graph)
+        fake_counter = SimpleNamespace(calls=0)
+        runner_module.build_graph = MagicMock(return_value=(fake_graph, fake_counter))
 
         return runner_module.ERFinder(**kwargs)
 

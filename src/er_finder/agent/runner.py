@@ -33,7 +33,7 @@ class ERFinder:
         self.checkpointer = checkpointer or make_checkpointer()
         self.classifier = classifier or InputClassifier()
         self.on_emergency = on_emergency
-        self.graph = build_graph(
+        self.graph, self.counter = build_graph(
             model,
             checkpointer=self.checkpointer,
             store=self.profiles.store,
@@ -57,6 +57,8 @@ class ERFinder:
         assessment = self.classifier.assess(text)
         if assessment.triage.severity == "critical" and self.on_emergency:
             self.on_emergency(EMERGENCY)
+
+        self.counter.calls = 0
 
         # 3. "지난번"/"최근 방문" 질의는 LLM 호출 없이 여기서 바로 note로 답한다.
         history_note = None
@@ -111,7 +113,7 @@ class ERFinder:
         self.pending = outcome.pending
         self.last_reply = outcome.reply
 
-        return build_chat_result(outcome, self.visit)
+        return build_chat_result(outcome, self.visit, self.counter.calls)
 
     def end_session(self):
         """체크포인트와 인스턴스 상태를 초기화해 다음 chat()이 새 세션처럼 시작되게 한다."""
