@@ -103,6 +103,7 @@ def test_report_preserves_pytest_exit_and_does_not_claim_integration(
         assert command[command.index("-m", 3) + 1] == "not live"
         assert "scripts.verify" in command
         assert "OPENAI_API_KEY" not in kwargs["env"]
+        assert "ER_DEMO_MODE" not in kwargs["env"]
         (output / "junit.xml").write_text(
             '<testsuite><testcase name="memory_check"/></testsuite>', encoding="utf-8"
         )

@@ -90,10 +90,9 @@ def connected_app(monkeypatch):
     backend = live.RunnerBackend(runner_factory=factory)
     web = WebSession(backend=backend)
     app = AppTest.from_file(str(APP), default_timeout=10)
-    app.session_state["live_web"] = web
+    app.session_state["web"] = web
     app.run()
     assert not app.exception
-    assert app.radio(key="mode").value == "실제 API"
     assert app.chat_input(key="message").disabled
     assert runners == []
 
@@ -151,13 +150,13 @@ def test_live_ui_rejection_never_saves_or_repeats_on_rerun(connected_app):
     assert web.backend.profile.get_recent_visits() == []
 
 
-def test_live_mode_switch_and_approval_in_same_event_never_saves_previous_plan(connected_app):
+def test_transport_change_and_approval_in_same_event_never_saves_previous_plan(connected_app):
     app, web, runner = connected_app
     select_candidate(app, web)
-    app.radio(key="mode").set_value("화면 검증용 데모")
+    app.selectbox(key="transport").set_value("walk")
     app.button(key="approve_visit").click().run()
     assert not app.exception
-    assert app.session_state["web"] is app.session_state["preview_web"]
+    assert app.session_state["web"] is web
     assert web.result is None
     assert runner.approvals == []
     assert web.backend.profile.get_recent_visits() == []

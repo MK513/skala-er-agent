@@ -27,17 +27,21 @@ def visible_text(app):
 @pytest.fixture
 def nearby_transport(monkeypatch):
     monkeypatch.setenv("EGEN_SERVICE_KEY", "offline-synthetic-key")
-    from er_finder.medical_api import client, resilience
+    from er_finder import http_retry
+    from er_finder.medical_api import client
 
     monkeypatch.setattr(client, "SERVICE_KEY", "offline-synthetic-key")
     requests = []
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(200, text=(FIXTURES / "nearby_gangnam.xml").read_text())
+        filename = "nearby_gangnam.xml"
+        if request.url.path.endswith("getEgytBassInfoInqire"):
+            filename = f"detail_{request.url.params['HPID']}.xml"
+        return httpx.Response(200, text=(FIXTURES / filename).read_text())
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        monkeypatch.setattr(resilience.httpx, "get", transport.get)
+        monkeypatch.setattr(http_retry.httpx, "request", transport.request)
         yield requests
 
 
@@ -100,12 +104,12 @@ def test_submit_uses_new_coordinates_and_radius_in_the_same_event(nearby_transpo
 
 def test_empty_or_failed_source_does_not_claim_no_hospitals(monkeypatch):
     monkeypatch.setenv("EGEN_SERVICE_KEY", "offline-synthetic-key")
-    from er_finder.medical_api import resilience
+    from er_finder import http_retry
 
     empty_xml = (FIXTURES / "empty_items_blank.xml").read_text()
     response_transport = httpx.MockTransport(lambda request: httpx.Response(200, text=empty_xml))
     with httpx.Client(transport=response_transport) as transport:
-        monkeypatch.setattr(resilience.httpx, "get", transport.get)
+        monkeypatch.setattr(http_retry.httpx, "request", transport.request)
         app = open_view()
         app.button(key="api_search").click().run()
     assert not app.exception
@@ -143,3 +147,64 @@ def test_other_browser_session_does_not_receive_previous_query(nearby_transport)
     second = open_view()
     assert not second.dataframe
     assert len(nearby_transport) == 1
+
+
+def test_detail_requires_click_and_displays_selected_hospital_source(nearby_transport):
+    app = open_view()
+    app.button(key="api_search").click().run()
+    app.selectbox(key="api_detail_hpid").set_value("A1100141").run()
+    assert len(nearby_transport) == 1
+    app.button(key="api_detail_search").click().run()
+    assert not app.exception
+    assert len(nearby_transport) == 2
+    assert nearby_transport[-1].url.params["HPID"] == "A1100141"
+    assert "서울특별시 강남구 남부순환로 2649, 베드로병원 (도곡동)" in visible_text(app)
+    assert "1544-7522" in visible_text(app)
+    app.run()
+    assert len(nearby_transport) == 2
+    assert "1544-7522" in visible_text(app)
+    app.selectbox(key="api_detail_hpid").set_value("A1100057").run()
+    assert len(nearby_transport) == 2
+    assert "서울특별시 강남구 남부순환로 2649, 베드로병원 (도곡동)" not in visible_text(app)
+
+
+def test_detail_uses_new_selection_and_a_new_search_clears_the_detail(nearby_transport):
+    app = open_view()
+    app.button(key="api_search").click().run()
+    app.selectbox(key="api_detail_hpid").set_value("A1100141")
+    app.button(key="api_detail_search").click().run()
+    assert not app.exception
+    assert nearby_transport[-1].url.params["HPID"] == "A1100141"
+    assert "1544-7522" in visible_text(app)
+    app.button(key="api_search").click().run()
+    assert not app.exception
+    assert len(nearby_transport) == 3
+    assert "서울특별시 강남구 남부순환로 2649, 베드로병원 (도곡동)" not in visible_text(app)
+    assert app.dataframe
+
+
+@pytest.mark.parametrize("failure", ["empty", "exception"])
+def test_detail_failure_keeps_nearby_table_and_hides_previous_detail(
+    nearby_transport, monkeypatch, failure
+):
+    from er_finder.medical_api import client
+
+    app = open_view()
+    app.button(key="api_search").click().run()
+    app.selectbox(key="api_detail_hpid").set_value("A1100141")
+    app.button(key="api_detail_search").click().run()
+    assert "1544-7522" in visible_text(app)
+
+    def unavailable(hpid):
+        if failure == "exception":
+            raise RuntimeError("PRIVATE_DETAIL serviceKey=never-display-this")
+        return {}
+
+    monkeypatch.setattr(client, "get_er_detail", unavailable)
+    app.button(key="api_detail_search").click().run()
+    assert not app.exception
+    assert app.dataframe
+    assert "PRIVATE_DETAIL" not in visible_text(app)
+    assert "never-display-this" not in visible_text(app)
+    assert "서울특별시 강남구 남부순환로 2649, 베드로병원 (도곡동)" not in visible_text(app)
+    assert "조회 실패" in visible_text(app)

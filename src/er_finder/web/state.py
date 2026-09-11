@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from er_finder.memory.store import ConsentRequiredError
 from er_finder.web.contracts import Backend, Message, WebResult
-from er_finder.web.preview import CASES, PreviewBackend
+from er_finder.web.live import RunnerBackend
 
 
 def _display_text(text: str) -> str:
@@ -16,10 +16,9 @@ def _display_text(text: str) -> str:
 
 @dataclass
 class WebSession:
-    backend: Backend = field(default_factory=PreviewBackend)
+    backend: Backend = field(default_factory=RunnerBackend)
     messages: list[Message] = field(default_factory=list)
     result: WebResult | None = None
-    scenario: str = "candidates"
     transport: str = "car"
     _last_query: str | None = field(default=None, repr=False)
 
@@ -85,15 +84,6 @@ class WebSession:
             self.backend.reset()
             result = WebResult(note="새로 조회하지 못했습니다. 잠시 후 다시 시도해 주세요.")
         self._receive(result)
-
-    def set_scenario(self, scenario: str) -> None:
-        if scenario not in CASES:
-            raise ValueError("알 수 없는 시연 시나리오입니다")
-        if scenario != self.scenario:
-            self.reset()
-            self.scenario = scenario
-            if isinstance(self.backend, PreviewBackend):
-                self.backend.scenario = scenario
 
     def set_transport(self, transport: str) -> None:
         if transport not in {"car", "walk", "transit"}:

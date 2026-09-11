@@ -1,51 +1,49 @@
-# Streamlit ↔ 에이전트 연결 계약 제안
+# Streamlit 연결 계약
 
-이 문서는 **조원 6이 준비한 화면 포트**다. 팀 공통 `models.py` 또는 1번 runner 구현을 이미 확정했다고 뜻하지 않는다. 현재 `PreviewBackend`와 `RunnerBackend`가 있으며, 기본 runner factory는 기존 모듈·provider 계약 오류를 명시하고 연결을 차단한다. 주입한 runner로 화면 어댑터를 검증했으며 실제 그래프 연결 완료는 아니다.
+화면은 의료기관 직접 조회, 에이전트 상담, 연결 상태의 세 탭으로 구성한다. 실제 API 응답과 runner 결과를 표시하며, 백엔드 실패 시 원인을 숨기고 다른 데이터로 대체하지 않는다.
 
-2026-09-11 업데이트: `e97341a`에 실제 runner와 2·3·5번 구현이 병합되었다. 현재는 runner의 import, 검색/provider 계약, 메시지 전달과 승인 재개에 오류가 있어 바로 연결할 수 없다. 아래 포트는 여전히 연결 제안이며, [최신 통합 검토](review-2026-09-11.md)의 선행 오류를 수정한 뒤 어댑터를 구현한다.
-
-## 구조
+## 호출 경로
 
 ```text
-streamlit_app.py → web/app.py → WebSession → Backend Protocol
-                                           └ PreviewBackend
-                                              └ ERFinderStore + VisitPlanService
-
-향후 Backend 구현체 추가 → 1번 runner → 2·3·5번 모듈과 실제 HITL 그래프
+streamlit_app.py → web/app.py
+  ├ 의료기관 조회 → web/api_view.py → 실제 의료 API
+  ├ 에이전트 상담 → WebSession → RunnerBackend → ERFinder
+  └ 연결 상태 → RunnerBackend.status()
 ```
 
-`web/contracts.py`의 `UIReply`, `UIHospital`은 표시용 모델이다. 이는 실제 도구 근거가 검증되었다는 보증이 아니다. 현재 데이터 출처는 `web/preview.py`에 선언된 고정 합성 값이다. 실제 연결 시 runner의 검증된 최종 결과를 이 모델로 변환한다.
+`WebSession(backend=RunnerBackend())`를 브라우저 세션에 보관한다. 조회·대화·승인 작업은 사용자 입력과 버튼 이벤트에서만 실행한다. 화면 재실행과 연결 상태 조회는 새 검색을 시작하지 않는다.
 
-## 필요한 호출
+의료기관 조회는 좌표·반경으로 주변 목록을 요청하고, 선택한 기관의 상세 정보를 별도로 조회한다. 이 목록·상세 조회를 전체 상담의 병상·중증 수용 판정으로 취급하지 않는다.
 
-| 포트 | 화면이 기대하는 동작 |
+## 화면과 runner의 경계
+
+| 호출 | 계약 |
 |---|---|
-| `chat(text, *, transport, force_refresh=False) -> WebResult` | 새 입력 이벤트에서만 조회. force_refresh는 마지막 검색을 다시 조회하며 선택/승인을 재실행하지 않음 |
-| `select_hospital(hpid) -> WebResult` | 현재 후보 안에서만 선택. 저장하지 않고 승인 대기 생성 |
-| `approve(approved: bool) -> WebResult` | 현재 승인 대기 1건을 한 번만 처리. 실제 연결에서는 runner의 interrupt/resume 사용 |
-| `reset()` | 대화·현재 위치·후보·승인 대기를 제거하고 동의 프로필 유지 |
-| `forget()` | 해당 사용자 대화와 프로필 전체 삭제 |
-| `user_id`, `profile` | 브라우저별 ID와 현재 ERFinderStore 프로필 API |
+| `status()` | `connected`, `checks`, `category`, `message` 반환. API 키 값은 포함하지 않으며 외부 요청을 보내지 않음 |
+| `connect(transport=...)` | 실제 provider·모델·runner를 조립하고 연결 결과 반환. import·계약·실행 오류를 화면용 상태로 변환 |
+| `chat(text, *, transport, force_refresh=False)` | 사용자 입력을 실제 runner에 전달. 강제 갱신은 마지막 검색의 재조회에만 사용 |
+| `select_hospital(hpid)` | 현재 응답에 포함된 후보만 선택. 아직 저장하지 않고 해당 후보의 승인 대기 반환 |
+| `approve(approved)` | 현재 승인 대기를 한 번 처리. 실패하거나 반복 interrupt가 발생하면 이전 승인을 재사용하지 않음 |
+| `reset()` | 대화·위치·후보·승인 대기 초기화. 동의한 프로필 유지 |
+| `forget()` | 해당 사용자 대화와 프로필 제거. 화면의 API 조회 기록도 함께 삭제 |
 
-`WebResult`의 필드는 `reply`, `pending_approval`, `note`다. 현재 pending은 4번의 `PendingVisitPlan` 타입을 사용한다. 실제 runner가 dict/다른 객체를 반환하면 어댑터에서 변환한다.
+`WebResult`는 `reply`, `pending_approval`, `note`를 가진다. `UIReply`와 `UIHospital`은 표시용 모델이며 runner 응답의 필드를 변환한다. 이 변환 자체가 도구 근거 검증을 대신하지 않는다. 승인 대기는 현재 선택한 후보의 ID·이름과 일치해야 한다.
 
-`WebSession`을 기본 생성하면 미리보기가 만들어진다. 향후 실제 어댑터를 주입할 때에는 `WebSession(backend=adapter)` 형태를 사용한다. **현재 UI에는 연결 상태에 따른 활성화 분기가 있다. 기본 factory의 provider·모델 조립은 아직 연결되지 않았다.** 포트만 구현한 것으로 실제 서비스가 자동 활성화되지는 않는다.
+## 세션과 저장
 
-## 팀원에게 먼저 확인할 사항
+브라우저마다 `user_id`와 Store를 분리한다. 기본 주소는 사용자가 동의한 경우에만 저장한다. 이동수단 변경·새 대화 등으로 검색 문맥이 바뀌면 기존 후보와 승인 대기를 먼저 취소한 뒤 이벤트를 처리한다. 승인 버튼과 설정 변경이 같은 이벤트에 들어와도 이전 계획을 저장하면 안 된다.
 
-1. **1번:** 실제 runner 생성 방식, 동기/비동기 실행, `chat`/승인 재개 응답 타입, 예외 규약, 검색 취소, 세션 종료. 위급 안내를 조회 완료 전에 표시할 콜백 또는 스트림 이벤트가 필요하다.
-2. **2번:** 병원 고유 ID, 전화번호 없는 경우, 정상 캐시/실패 대체 캐시, 원본 갱신 시각과 `is_cached`·`is_stale` 의미. 녹화 fixture의 출처·시각·비식별화.
-3. **3번:** 도보 반경 정책. 기존 `interfaces.md`는 5/10/20/30, `memory/context.py`는 도보 3/6/9/12, 메모리 테스트는 3/10/20/30으로 서로 다르다. UI는 반환된 반경만 표시하고 확대 규칙을 정하지 않는다.
-4. **4번:** 실제 저장소의 전체 삭제 API, 체크포인트 정리, 저장 실패 시 재승인 정책. 현재 PreviewBackend는 자신만 소유한 InMemoryStore를 폐기해 전체 삭제한다. 공유/영구 저장소로 바꾸면 이 방법을 쓰면 안 된다.
-5. **5번:** 입력 마스킹 완료 시점, critical 즉시 안내 이벤트, 도구 근거 검증 완료 결과. 현재 표시용 정규식은 일부 전화·주민번호만 가리며 실제 가드레일을 대체하지 않는다.
+승인 전 저장 0회, 거절 후 저장 0회, 승인 후 저장 1회가 기준이다. 승인 결과를 확인하지 못한 경우 자동 재시도로 중복 저장하지 않는다. 메모리 저장은 예약·접수가 아니며 서버 종료 후 영속성을 보장하지 않는다.
 
-## 실제 연결 이후의 인수 검증
+## 현재 백엔드 경계와 인수 검증
 
-- 키 누락/잘못된 인증, 타임아웃, 부분 데이터, 위치 재질문에서 예외가 화면에 유출되지 않는지.
-- critical 입력의 119 안내가 외부 조회 완료보다 먼저 도착하는지.
-- 도구 원본과 카드의 병상·전화·ID가 일치하는지.
-- 승인 전 도구 쓰기 0회, 거절 후 0회, 승인 후 1회, Streamlit rerun 후 추가 0회.
-- 시나리오 데모가 아닌 실제 그래프의 상태 유지·세션 격리·삭제.
-- 명시적으로 허용된 실제 API 테스트와 별도 성능 계측.
+`33e9f22`에서 API 재시도는 `http_retry.py`로 통합되었다. 공통 모델의 구문 오류와 runner/search가 요구하는 memory 이름·상태 계약 오류는 upstream에 남아 있다. 실제 factory에서 이 오류가 발생하면 상담 연결을 실패 상태로 표시한다. 의료기관 직접 조회는 이 상담 경로와 독립적으로 실행한다.
 
-UI 시연 테스트의 통과를 위 항목의 통과로 옮겨 적지 않는다.
+전체 상담 연결 후에는 다음을 실제 runner로 다시 확인한다.
+
+- 사용자 메시지 전달, 위치 재질문, 검색 반경과 병원 ID·전화·병상 근거 일치.
+- 위급 입력의 119 안내 시점과 오류 응답 처리.
+- 승인 전/후/거절의 저장 횟수와 실제 LangGraph interrupt/resume.
+- 재실행 중 추가 요청 0회, 브라우저별 격리, 새 대화와 전체 삭제.
+
+오프라인 fixture·가짜 runner 테스트의 통과와 실제 API/LLM 실행 결과는 [검증 기록](verification.md)에 나누어 기록한다.

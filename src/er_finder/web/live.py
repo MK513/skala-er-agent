@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from dotenv import load_dotenv
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
@@ -59,14 +60,70 @@ def credential_status() -> dict[str, bool]:
 
 
 def _default_runner_factory(**kwargs: Any) -> Any:
-    """Check the real entry point lazily, without inventing an incompatible API provider."""
-    module = importlib.import_module("er_finder.agent.runner")
-    if not callable(getattr(module, "ERFinder", None)):
-        raise ConnectionUnavailable("contract")
-    # The merged ERFinder needs a provider with methods not exposed by the merged
-    # medical API (including refresh/lifecycle semantics). Wiring that contract is
-    # backend work; this UI must not patch modules or substitute synthetic data.
-    raise ConnectionUnavailable("contract")
+    """Construct the real model, classifier and runner only after explicit connection."""
+    runner_module = importlib.import_module("er_finder.agent.runner")
+    classifier_module = importlib.import_module("er_finder.guardrails.triage")
+    model_module = importlib.import_module("langchain_openai")
+    provider_module = importlib.import_module("er_finder.web.provider")
+    timeout = float(os.environ.get("ER_REQUEST_TIMEOUT", "5"))
+    http_client = httpx.Client(timeout=timeout)
+    provider = None
+    try:
+        provider = provider_module.LiveProvider(kakao_key=os.environ["KAKAO_REST_API_KEY"])
+        model = model_module.ChatOpenAI(
+            model=os.environ.get("ER_MAIN_MODEL", "gpt-5-mini"),
+            reasoning_effort=os.environ.get("ER_MAIN_REASONING_EFFORT", "low"),
+            max_tokens=int(os.environ.get("ER_MAIN_MAX_OUTPUT_TOKENS", "1500")),
+            http_client=http_client,
+            timeout=timeout,
+        )
+        classifier_model = model_module.ChatOpenAI(
+            model=os.environ.get("ER_CLASSIFIER_MODEL", "gpt-4o-mini"),
+            temperature=float(os.environ.get("ER_CLASSIFIER_TEMPERATURE", "0")),
+            max_tokens=int(os.environ.get("ER_CLASSIFIER_MAX_TOKENS", "200")),
+            http_client=http_client,
+            timeout=timeout,
+        )
+        classifier = classifier_module.InputClassifier(classifier_model)
+        runner = runner_module.ERFinder(
+            provider=provider, model=model, classifier=classifier, **kwargs
+        )
+        return _ManagedRunner(runner, provider, http_client)
+    except Exception:
+        try:
+            if provider is not None:
+                provider.close()
+        finally:
+            http_client.close()
+        raise
+
+
+class _ManagedRunner:
+    """Close only explicitly owned resources; leave SDK private clients untouched."""
+
+    def __init__(self, runner: Any, provider: Any, http_client: httpx.Client):
+        self._runner, self._provider, self._http_client = runner, provider, http_client
+
+    def chat(self, text: str, *, force_refresh: bool = False) -> Any:
+        return self._runner.chat(text, force_refresh=force_refresh)
+
+    def approve(self, approved: bool) -> Any:
+        return self._runner.approve(approved)
+
+    def end_session(self) -> None:
+        try:
+            self._runner.end_session()
+        finally:
+            self._provider.clear_cache()
+
+    def close(self) -> None:
+        try:
+            self.end_session()
+        finally:
+            try:
+                self._provider.close()
+            finally:
+                self._http_client.close()
 
 
 class RunnerBackend:
@@ -147,7 +204,11 @@ class RunnerBackend:
         self._category = category
         if runner is not None:
             try:
-                runner.end_session()
+                close = getattr(runner, "close", None)
+                if callable(close):
+                    close()
+                else:
+                    runner.end_session()
             except Exception:
                 # Discard the runner even when checkpoint cleanup fails. Never
                 # reuse an uncertain graph, especially after a write attempt.
@@ -243,8 +304,7 @@ class RunnerBackend:
             try:
                 self._runner.end_session()
             except Exception:
-                self._runner = None
-                self._category = "runtime"
+                self._invalidate("runtime")
 
     def forget(self) -> None:
         had_runner = self._runner is not None

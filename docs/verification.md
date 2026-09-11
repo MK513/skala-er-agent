@@ -1,40 +1,43 @@
 # 검증 기록 · 조원 6
 
-기준: `main`의 `e97341a`와 `feature/verification`의 로컬 Streamlit·검증 변경분. 백엔드 오류 수정은 보류하고 화면 실행과 연결 경계를 검증했다.
+기준 코드에는 upstream `main`의 `33e9f22`가 반영되어 있다. 운영 화면은 의료기관 조회·에이전트 상담·연결 상태의 세 탭으로 구성한다. 전체 에이전트 성공 여부와 개별 API 요청 결과를 구분한다.
 
-## 현재 실행 결과
+## 실제 API 확인
 
-2026-09-11T05:06:10.524000+00:00 (UTC), macOS / Python 3.14.6 / Streamlit 1.63.0에서 실행했다.
+2026-09-11 **14:15:14 KST** (`2026-09-11T05:15:14+00:00`)에 다음 요청 결과를 확인했다. 키 값은 기록하지 않았다.
+
+| 확인 대상 | 결과 | 확인 범위 |
+|---|---|---|
+| OpenAI `/v1/models` | HTTP 200 | API 인증 요청 성공. 실제 모델 추론이나 에이전트 응답 검증은 아님 |
+| E-Gen HTTPS 위치 조회 | `resultCode=00`, 기관 10곳 | 실제 주변 기관 목록 응답 확인. 병상·중증 수용·최종 추천 성공을 의미하지 않음 |
+| 카카오 API | HTTP 403 | 응답 확인 후 추가 진단을 보류함. 주소 검색 성공으로 기록하지 않음 |
+
+## 오프라인 검증
 
 ```bash
 .venv/bin/python scripts/verify.py --output verification-results
 ```
 
-- 전체 오프라인 검증: **174 PASS, 수집 오류 6건, 전체 FAIL**.
-- 메모리 49개, 의료 API 32개, 화면 상태 15개, Streamlit 사용자 흐름 26개, runner 어댑터 18개, API 조회 화면 6개, 검증 도구 24개, 주입한 runner를 사용하는 실제 모드 화면 흐름 4개가 통과했다.
-- 기존 agent의 모델 구문 오류 1건, search의 retry import 오류 4건과 없는 demo_provider import 1건은 그대로 남는다.
-- 통합 상태: **BLOCKED**. 상세 원인은 [백엔드 통합 검토](review-2026-09-11.md)를 따른다.
-- 이번 화면·검증 코드 Ruff와 화면 파일 format 검사: PASS. 전체 저장소 Ruff에는 기존 백엔드 오류가 남는다.
-- 실제 API·실제 LLM 호출, 임상 정확도, 추천 지연 시간 측정: 수행하지 않음.
+최신 통과·실패·수집 오류 수치는 위 실행으로 생성한 `verification-results/report.json`, `junit.xml`, `pytest.log`를 따른다. `started_at`, `git_commit`, `working_tree_dirty`를 함께 확인한다. 이전 실행의 테스트 수를 현재 변경분의 결과로 사용하지 않는다.
 
-자동 보고서는 `verification-results/report.json`, `junit.xml`, `pytest.log`다. 로컬 실행 생성물로 Git에서 제외한다. pytest 실행 시간은 추천 P90이 아니다.
+- 검증 도구는 live 테스트를 제외하고 Python 소켓의 외부 통신을 차단한다. 별도 실행 모드를 환경변수로 강제하지 않는다.
+- API 화면 테스트는 로컬 XML fixture와 MockTransport로 기존 parser까지 확인한다.
+- 상담 화면의 성공·승인·거절·재실행 검증에는 주입한 runner를 사용한다. 실제 LLM·LangGraph HITL 검증과 구분한다.
+- 수집 오류가 있어도 실행 가능한 테스트는 기록하며 전체 결과를 FAIL로 유지한다.
+- 공통 재시도 모듈은 `http_retry.py`를 검사한다. 삭제된 `medical_api/resilience.py`를 차단 파일로 보고하지 않는다.
 
-## 화면 실행과 검토
+보고서와 로그는 로컬 생성물로 Git에서 제외한다. pytest 실행 시간은 추천 지연 시간이 아니다.
 
-```bash
-uv sync --frozen --extra dev
-uv run --frozen streamlit run streamlit_app.py
-```
+## 현재 실행 경계
 
-로컬 `http://localhost:8503`에서 Streamlit 서버 실행 및 Chrome의 초기 실제 모드, 연결 상태와 키 누락 안내를 확인했다.
+**의료기관 조회**는 좌표·반경으로 실제 API 목록을 요청하고 기관 선택 후 상세 정보를 조회하는 경로다. 결과가 없거나 실패하면 그 상태를 표시한다. 외부 요청은 조회 이벤트에서만 실행하고, 화면 재실행은 저장된 결과를 사용한다.
 
-- **응급실 찾기:** 대화·후보 카드·선택·저장 승인·새 대화·삭제 UI. 실제 runner 어댑터의 성공 흐름은 주입한 로컬 테스트 runner로 검증한다. 실제 프로젝트 그래프의 통과를 뜻하지 않는다.
-- **의료 API 조회:** 조회 버튼에서만 기존 `medical_api.client.list_nearby_ers()`를 호출한다. 기존 parser와 MockTransport의 녹화 XML로 표 표시, 빈 응답·오류, 세션 격리와 rerun 시 추가 호출 0회를 확인했다. 병상·중증 추천을 수행하지 않는다.
-- **연결 상태:** API 키의 설정 여부만 보여준다. 설정됨은 인증 성공을 의미하지 않는다.
-- **화면 검토용 예시:** 고정 합성 카드와 승인 흐름을 별도 모드에서 확인한다. 실제 모드와 기록이 섞이지 않는다.
-- 모드 변경과 승인·주소 저장/삭제를 같은 이벤트로 넣어도 이전 모드의 작업을 실행하지 않는다.
-- 전체 삭제는 양쪽 모드의 저장 정보와 API 조회 기록을 제거한다.
+**에이전트 상담**은 실제 provider·모델·runner 조립을 시도한다. upstream의 공통 모델 구문 오류와 메모리 import/상태 계약 오류가 남아 현재 전체 상담 연결은 **BLOCKED**다. 개별 API 인증·기관 조회 성공을 전체 상담의 성공으로 설명하지 않는다. 동작을 맞추기 위해 팀원의 백엔드 모듈을 임시 교체하지 않았다.
 
-현재 기본 runner factory는 모듈 import와 provider 계약 준비 여부를 확인하고 연결을 차단한다. 백엔드 import 오류를 고친 뒤에도 실제 provider 및 모델을 생성하는 factory 연결 작업이 필요하다. API 키만 채운 것으로 전체 에이전트가 완성되지 않는다.
+**연결 상태**는 API 키 설정 여부와 에이전트 연결 결과를 표시한다. 키 설정 여부와 인증 결과는 서로 다르다.
 
-기존 메모리만 병합되어 있던 시점의 104 PASS 기록은 [이전 검증 기록](verification-before-integration.md)에 보존했다. 현재 수치로 사용하지 않는다.
+아직 확인되지 않은 범위는 실제 프로젝트 그래프의 입력 전달·119 안내 시점·HITL 승인 재개·최종 후보 근거와 추천 정확도·지연 시간이다. 연결 조건은 [UI 연결 계약](ui-integration.md)을 따른다. [e97341a 검토 기록](review-2026-09-11.md)과 [이전 검증 기록](verification-before-integration.md)은 해당 시점의 이력으로 보존한다.
+
+최종 6번 검증: 화면·상태·어댑터·provider·API 조회·검증 도구 76개 PASS. 실제 기존 E-Gen client로 반경 5km 내 기관 9곳, 선택 기관의 상세 주소와 대표전화 조회를 확인했다. 카카오는 추가 진단하지 않았다.
+
+최신 전체 실행은 161 PASS, 검색 테스트 assertion 실패 1건, 기존 모듈 수집 오류 5건으로 FAIL이다. 검색의 재시도 기대 횟수와 실제 횟수 차이 및 공통 모델·상태 import 문제는 다른 담당 범위로 남겼다.

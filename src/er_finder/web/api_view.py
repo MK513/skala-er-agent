@@ -10,9 +10,11 @@ from er_finder.web.live import credential_status
 
 def render_api_view() -> None:
     """Query the existing medical client only on submit; retain the last result per session."""
-    st.subheader("주변 응급의료기관 · API 조회")
-    st.caption("E-Gen 위치정보 원자료 · 좌표와 반경을 입력한 후 조회하세요.")
-    st.info("기관 위치와 대표전화를 조회합니다. 가용 병상과 진료 가능 여부는 전화로 확인하세요.")
+    st.subheader("주변 응급의료기관 찾기")
+    st.caption("E-Gen 위치정보 원자료 · 반경 내 기관을 거리순으로 확인하고 상세 정보를 조회하세요.")
+    st.info(
+        "기관 주소와 대표전화를 확인할 수 있습니다. 가용 병상과 진료 가능 여부는 전화로 확인하세요."
+    )
     configured = credential_status()["EGEN_SERVICE_KEY"]
     if not configured:
         st.warning("EGEN_SERVICE_KEY 설정이 필요합니다. 서버의 환경변수 또는 .env를 확인하세요.")
@@ -106,3 +108,50 @@ def render_api_view() -> None:
             column_config={"거리 (km)": st.column_config.NumberColumn(format="%.2f")},
         )
         st.caption("주소 등 응답에 없는 항목은 ‘확인 불가’로 표시합니다.")
+        _render_detail(result, configured=configured)
+
+
+def _render_detail(result: dict, *, configured: bool) -> None:
+    hospitals = {
+        row["기관 ID"]: row["기관명"] for row in result["rows"] if row["기관 ID"] != "확인 불가"
+    }
+    if not hospitals:
+        return
+
+    st.subheader("기관 상세")
+    selected = st.selectbox(
+        "상세 정보를 확인할 기관",
+        list(hospitals),
+        format_func=lambda hpid: f"{hospitals[hpid]} · {hpid}",
+        key="api_detail_hpid",
+        disabled=not configured,
+    )
+    if st.button("상세 조회", key="api_detail_search", disabled=not configured):
+        if configured and selected in hospitals:
+            detail = {"hpid": selected, "data": {}, "error": False}
+            try:
+                with st.spinner("기관 상세 정보를 조회하고 있습니다…"):
+                    from er_finder.medical_api.client import get_er_detail
+
+                    detail["data"] = get_er_detail(selected)
+            except Exception:
+                detail["error"] = True
+            result["detail"] = detail
+
+    detail = result.get("detail")
+    if detail is None or detail["hpid"] != selected:
+        st.caption("기관을 선택하고 상세 조회를 누르면 주소와 대표전화가 표시됩니다.")
+        return
+    if detail["error"] or not detail["data"]:
+        st.info("상세 정보를 확인하지 못했습니다. 빈 응답이거나 조회 실패일 수 있습니다.")
+        return
+
+    data = detail["data"]
+    with st.container(border=True):
+        st.text(data.get("name") or hospitals[selected])
+        st.caption("기관 ID")
+        st.text(selected)
+        st.caption("주소")
+        st.text(data.get("address") or "확인 불가")
+        st.caption("대표전화")
+        st.text(data.get("main_tel") or data.get("er_tel") or "확인 불가")

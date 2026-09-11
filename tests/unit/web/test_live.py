@@ -301,3 +301,86 @@ def test_forget_reports_failed_graph_cleanup_even_when_profile_is_deleted(live, 
     assert "offline-test-value" not in str(caught.value)
     assert backend.profile.get_home_address() is None
     assert not backend.status().connected
+
+
+def test_default_factory_constructs_configured_models_classifier_and_actual_runner(
+    live, monkeypatch
+):
+    models, providers, arguments = [], [], []
+
+    class Model:
+        def __init__(self, **kwargs):
+            models.append(kwargs)
+
+    class Provider:
+        def __init__(self, **kwargs):
+            self.closed = False
+            providers.append(self)
+
+        def clear_cache(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    def runner(**kwargs):
+        arguments.append(kwargs)
+        return OfflineRunner(**{key: kwargs[key] for key in ("user_id", "transport", "store")})
+
+    modules = {
+        "er_finder.agent.runner": SimpleNamespace(ERFinder=runner),
+        "er_finder.guardrails.triage": SimpleNamespace(InputClassifier=lambda model: model),
+        "langchain_openai": SimpleNamespace(ChatOpenAI=Model),
+        "er_finder.web.provider": SimpleNamespace(LiveProvider=Provider),
+    }
+    monkeypatch.setattr(live.importlib, "import_module", lambda name: modules[name])
+    monkeypatch.setenv("ER_MAIN_MODEL", "configured-main")
+    monkeypatch.setenv("ER_MAIN_REASONING_EFFORT", "low")
+    monkeypatch.setenv("ER_MAIN_MAX_OUTPUT_TOKENS", "1234")
+    monkeypatch.setenv("ER_CLASSIFIER_MODEL", "configured-classifier")
+    monkeypatch.setenv("ER_CLASSIFIER_TEMPERATURE", "0")
+    monkeypatch.setenv("ER_CLASSIFIER_MAX_TOKENS", "120")
+    backend = live.RunnerBackend()
+    assert backend.connect(transport="walk").connected
+    assert [model["model"] for model in models] == ["configured-main", "configured-classifier"]
+    assert models[0]["max_tokens"] == 1234 and "temperature" not in models[0]
+    assert models[1]["max_tokens"] == 120 and models[1]["temperature"] == 0
+    assert arguments[0]["provider"] is providers[0]
+    assert arguments[0]["transport"] == "walk"
+    backend.profile.set_home_address("서울", consent=True)
+    assert ERFinderStore(arguments[0]["store"], backend.user_id).get_home_address() == "서울"
+    owned_http = models[0]["http_client"]
+    assert owned_http is models[1]["http_client"] and not owned_http.is_closed
+    assert backend.connect(transport="car").connected
+    assert providers[0].closed and owned_http.is_closed
+
+
+def test_default_factory_closes_resources_when_runner_construction_fails(live, monkeypatch):
+    models, providers = [], []
+
+    def model(**kwargs):
+        models.append(kwargs)
+        return object()
+
+    class Provider:
+        def __init__(self, **kwargs):
+            self.closed = False
+            providers.append(self)
+
+        def close(self):
+            self.closed = True
+
+    def broken_runner(**kwargs):
+        raise AttributeError("offline-test-value")
+
+    modules = {
+        "er_finder.agent.runner": SimpleNamespace(ERFinder=broken_runner),
+        "er_finder.guardrails.triage": SimpleNamespace(InputClassifier=lambda model: model),
+        "langchain_openai": SimpleNamespace(ChatOpenAI=model),
+        "er_finder.web.provider": SimpleNamespace(LiveProvider=Provider),
+    }
+    monkeypatch.setattr(live.importlib, "import_module", lambda name: modules[name])
+    backend = live.RunnerBackend()
+    assert backend.connect().category == "contract"
+    assert providers and providers[0].closed
+    assert models[0]["http_client"].is_closed

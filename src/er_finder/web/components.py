@@ -90,7 +90,7 @@ def render_reply(
     on_select: Callable[[str], None],
     *,
     selection_disabled: bool = False,
-    source_label: str = "화면 검증용 데모",
+    source_label: str = "실제 에이전트 응답",
 ) -> None:
     if reply.call_119_first:
         st.error("119에 즉시 신고하세요. 검색 결과를 기다리지 마세요.", icon="🚨")

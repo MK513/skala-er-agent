@@ -27,7 +27,7 @@ BACKEND_FILES = (
     "src/er_finder/medical_api/client.py",
     "src/er_finder/medical_api/parser.py",
     "src/er_finder/medical_api/cache.py",
-    "src/er_finder/medical_api/resilience.py",
+    "src/er_finder/http_retry.py",
     "src/er_finder/search/geocoder.py",
     "src/er_finder/search/distance.py",
     "src/er_finder/search/candidates.py",
@@ -52,7 +52,7 @@ FIXTURE_FILES = (
 
 
 def _deny_network(*args, **kwargs):
-    raise RuntimeError("Offline verification blocks network access; use synthetic local inputs.")
+    raise RuntimeError("Offline verification blocks network access; use local fixtures.")
 
 
 def pytest_configure(config):
@@ -206,7 +206,6 @@ def run_verification(root: Path, output: Path, *, timeout: float, require_integr
     environment.update(
         {
             "PYTHONPATH": os.pathsep.join((str(root), str(root / "src"))),
-            "ER_DEMO_MODE": "true",
             "LANGSMITH_TRACING": "false",
             "LANGCHAIN_TRACING_V2": "false",
             "STREAMLIT_BROWSER_GATHER_USAGE_STATS": "false",
@@ -251,7 +250,7 @@ def run_verification(root: Path, output: Path, *, timeout: float, require_integr
         "working_tree_dirty": None if dirty is None else bool(dirty),
         "python": sys.version.split()[0],
         "provenance": {
-            "scope": "offline module tests, UI preview, verification tooling",
+            "scope": "offline module tests, API and runner UI contracts, verification tooling",
             "live_api_tests": "EXCLUDED",
             "network_policy": "Python socket DNS/TCP/UDP calls blocked in pytest",
             "clinical_validation": False,
