@@ -8,12 +8,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from er_finder.memory.store import ERFinderStore, VisitRecord
 
 
-class VisitPlanStatus(str, Enum):
+class VisitPlanStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"

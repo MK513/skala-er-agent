@@ -10,7 +10,7 @@ Store에는 "동의한 기본 주소"와 "방문 기록"만 저장한다. curren
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TypedDict
 
 from langgraph.store.base import BaseStore
@@ -116,4 +116,4 @@ class ERFinderStore:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
