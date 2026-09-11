@@ -5,8 +5,8 @@ runner.py 자체의 로직(문자열 처리, 분기, 상태 전이, 예외 처�
 스텁은 테스트가 끝나면 정리되므로 다른 테스트 파일(import 경로가 이미 존재하는
 er_finder.agent.tools 등)에는 영향을 주지 않는다.
 
-실제 LLM 모델 호출은 어디에서도 발생하지 않는다: create_agent 자체를 MagicMock으로
-대체해 만든 가짜 그래프의 invoke()만 호출한다.
+실제 LLM 모델 호출은 어디에서도 발생하지 않는다: agent.factory.build_graph 자체를
+MagicMock으로 대체해 만든 가짜 그래프의 invoke()만 호출한다.
 """
 
 import importlib
@@ -149,7 +149,7 @@ def make_finder(runner_module):
 
         fake_graph = MagicMock(name="graph")
         fake_graph.invoke.return_value = {"structured_response": None}
-        runner_module.create_agent = MagicMock(return_value=fake_graph)
+        runner_module.build_graph = MagicMock(return_value=fake_graph)
 
         return runner_module.ERFinder(**kwargs)
 

@@ -1,7 +1,7 @@
 """agent/runner.py(ERFinder) 검증.
 
 conftest.py의 runner_module/make_finder 픽스처가 최소 스텁을 심어 runner.py만 독립적으로 돌린다.
-LLM 모델은 어디에서도 호출하지 않는다 - create_agent 자체를 MagicMock으로 바꿔서
+LLM 모델은 어디에서도 호출하지 않는다 - agent.factory.build_graph 자체를 MagicMock으로 바꿔서
 만든 가짜 그래프(finder.graph)의 invoke()만 호출되며, 그 반환값은 각 테스트가 직접 정한다.
 
 테스트 개수를 적게 유지하기 위해 같은 메서드/시나리오 군(chat 분기, _run_graph 분기,

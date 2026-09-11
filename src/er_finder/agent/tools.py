@@ -29,7 +29,7 @@ def get_severe_acceptance(sido: str, sigungu: str, condition: str, config: Runna
 def get_er_detail(hpid: str, config: RunnableConfig) -> dict:
     """병상·수용 조건을 통과한 상위 3곳의 직통 전화·주소·시간을 항상 조회한다. 병렬 가능."""
     session = config["configurable"]["session"]
-    return session.get_er_detail(hpid);
+    return session.get_er_detail(hpid)
 
 @tool
 def save_visit_plan(hpid: str, name: str, symptom_summary: str, config: RunnableConfig) -> dict:
