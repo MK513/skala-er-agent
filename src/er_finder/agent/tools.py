@@ -1,6 +1,8 @@
 from langchain.tools import tool
 from langchain_core.runnables import RunnableConfig
 
+from er_finder.memory.visit_plan import PendingVisitPlan, VisitPlanService
+
 @tool
 def geocode(query: str, config: RunnableConfig) -> dict:
     """사용자의 주소·동·건물·역을 좌표로 변환한다. 응급실 목록 전에 호출한다."""
@@ -34,7 +36,11 @@ def get_er_detail(hpid: str, config: RunnableConfig) -> dict:
 @tool
 def save_visit_plan(hpid: str, name: str, symptom_summary: str, config: RunnableConfig) -> dict:
     """사용자가 선택한 병원과 증상 요약을 명시적 HITL 승인 이후에만 저장한다."""
-    session = config["configurable"]["session"]
-    return session.save_visit_plan(hpid, name, symptom_summary)
+    # HumanInTheLoopMiddleware가 이 도구 호출 자체를 승인 이후에만 실행하므로,
+    # 여기 도달했다는 것 자체가 승인됨을 의미한다(interfaces.md §2 도구 규약).
+    profile_store = config["configurable"]["profile_store"]
+    plan = PendingVisitPlan(hpid=hpid, name=name, symptom_summary=symptom_summary)
+    result = VisitPlanService(profile_store).decide(plan, approved=True)
+    return result.as_dict()
 
 TOOLS = [geocode, list_nearby_ers, get_er_bed_status, get_severe_acceptance, get_er_detail, save_visit_plan]
