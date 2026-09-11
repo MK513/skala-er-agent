@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from er_finder.medical_api.resilience import SAFE_TIMEOUT, request_with_transport_retries
+from er_finder.http_retry import SAFE_TIMEOUT, request_with_transport_retries
 
 _ADDRESS_URL = "https://dapi.kakao.com/v2/local/search/address.json"
 _KEYWORD_URL = "https://dapi.kakao.com/v2/local/search/keyword.json"
