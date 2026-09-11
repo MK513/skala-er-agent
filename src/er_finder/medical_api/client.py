@@ -13,8 +13,9 @@ from urllib.parse import unquote
 import httpx
 from dotenv import load_dotenv
 
+from er_finder.http_retry import request_with_transport_retries
+
 from . import cache, parser
-from .resilience import get_with_retry
 
 load_dotenv()
 
@@ -46,11 +47,18 @@ def _call(endpoint: str, params: dict) -> str | None:
     """E-Gen을 호출해 응답 텍스트를 돌려준다. 실패하면 None을 돌려준다."""
     url = BASE_URL.rstrip("/") + endpoint
     try:
-        return get_with_retry(
-            url, params, timeout=TIMEOUT, max_retries=MAX_RETRIES, backoff=BACKOFF
+        response = request_with_transport_retries(
+            None,
+            "GET",
+            url,
+            params=params,
+            timeout=TIMEOUT,
+            max_retries=MAX_RETRIES,
+            backoff=BACKOFF,
         )
     except httpx.HTTPError:
         return None
+    return response.text
 
 
 def _is_stale(beds_updated_at: str | None) -> bool:
