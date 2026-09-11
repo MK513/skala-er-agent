@@ -2,7 +2,7 @@
 
 카카오·E-Gen·OpenAI API를 연결하는 응급의료기관 조회와 에이전트 상담 화면입니다. 의료기관 직접 조회와 에이전트 상담은 별도 경로로 실행됩니다. 화면에 표시할 기관 정보는 실제 API 응답을 사용합니다.
 
-`main`의 `33e9f22`까지 반영했습니다. 공통 재시도 코드는 `http_retry.py`로 통합되었습니다. 공통 모델 구문과 메모리 import 계약 오류는 upstream에 남아 있어 전체 상담 연결을 막을 수 있습니다. 현재 실행 결과와 남은 오류는 [검증 기록](docs/verification.md)을 확인하세요.
+`main`의 `00971aa`를 기준으로 실제 메모리·LangGraph·의료 API 연결을 수정했습니다. 좌표로 직접 조회하면 카카오 없이 사용할 수 있습니다. 최신 실행 결과는 [검증 기록](docs/verification.md)에 기록합니다.
 
 ## 실행
 
@@ -10,18 +10,26 @@ Python 3.11 이상이 필요합니다. 프로젝트 루트에서 실행합니다
 
 ```bash
 uv sync --frozen --extra dev
-uv run --frozen streamlit run streamlit_app.py
+uv run --frozen python scripts/run_local.py
 ```
 
-설치 후 `er-finder` 또는 `python -m er_finder`도 같은 웹 화면을 실행합니다. 기본 주소는 localhost입니다.
+로컬 확인 주소는 **http://localhost:8503**입니다. 이미 설치된 환경에서는 다음 명령으로 실행합니다.
+
+```bash
+.venv/bin/python scripts/run_local.py
+```
+
+이 실행기는 프로젝트 `.env`를 명시적으로 적용하므로 다른 작업에서 상속된 API 키가 우선하지 않습니다. 포트는 `--port 8504`처럼 바꿀 수 있습니다. 일반 `streamlit run` 또는 `er-finder` 실행은 기존 환경변수 우선순위를 유지합니다.
 
 기존 `.env` 또는 실행 환경에 다음 키를 설정합니다. 필요한 항목은 [.env.example](.env.example)을 참고하세요. 화면은 키의 설정 여부만 표시하며 키 값을 출력하지 않습니다.
 
 ```dotenv
 OPENAI_API_KEY=...
-KAKAO_REST_API_KEY=...
+KAKAO_REST_API_KEY=... # 주소 검색을 사용할 때만 필요
 EGEN_SERVICE_KEY=...
 ```
+
+카카오 없이 상담하려면 왼쪽 **주소 검색 없이 좌표로 조회**를 체크하고 위도·경도를 지정한 뒤 **에이전트 연결 확인**을 누릅니다. **에이전트 상담** 탭에 증상을 입력합니다. 입력된 좌표가 실제 조회할 위치인지 확인하세요.
 
 ## 사용 흐름
 
@@ -42,9 +50,9 @@ uv run --frozen python scripts/verify.py
 uv run --frozen python scripts/verify.py --require-integration
 ```
 
-검증 도구는 live 테스트를 제외하고 Python 소켓의 외부 통신을 차단합니다. 로컬 fixture와 주입한 runner를 사용한 화면 계약 검증은 실제 LLM·LangGraph 승인 재개·API 호출 검증과 구분합니다. 수집 오류가 남으면 실행 가능한 테스트를 계속 기록하되 전체 결과는 FAIL입니다.
+검증 도구는 live 테스트를 제외하고 Python 소켓의 외부 통신을 차단합니다. 오프라인 검증은 실제 메모리·검색·LangGraph를 실행하며 모델과 HTTP 응답만 테스트 자료로 대체합니다. 별도의 화면 계약 테스트에는 주입한 runner를 사용합니다. 실제 키로 실행한 결과는 별도 로컬 보고서로 구분합니다. 수집 오류가 남으면 실행 가능한 테스트를 계속 기록하되 전체 결과는 FAIL입니다.
 
-`verification-results/report.json`, `junit.xml`, `pytest.log`에 실행 근거를 저장합니다. 전체 연결을 검증하지 못하면 `integration.status`는 BLOCKED 또는 NOT_VERIFIED이며, 파일이 존재하거나 단위 테스트가 통과한 것만으로 통합 PASS를 표시하지 않습니다. 추천 정확도와 지연 시간은 별도 실측 전까지 미측정입니다.
+`verification-results/report.json`, `junit.xml`, `pytest.log`에 실행 근거를 저장합니다. 전체 연결을 검증하지 못하면 `integration.status`는 BLOCKED 또는 NOT_VERIFIED이며, 파일이 존재하거나 단위 테스트가 통과한 것만으로 통합 PASS를 표시하지 않습니다. 추천 정확도는 미측정이며, 지연 시간의 단일 실행 실측은 [검증 기록](docs/verification.md)을 따릅니다.
 
 ## 담당과 문서
 

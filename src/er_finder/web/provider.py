@@ -8,6 +8,8 @@ from threading import RLock
 from typing import Any
 
 from er_finder.medical_api.cache import make_key
+from er_finder.medical_api.parser import normalize_sido
+from er_finder.search.coordinates import parse_coordinates
 
 
 class LiveProvider:
@@ -37,6 +39,7 @@ class LiveProvider:
             )
         )
         self._bed_cache: dict = {}
+        self._detail_cache: dict = {}
         self._lock = RLock()
         self._closed = False
 
@@ -46,11 +49,17 @@ class LiveProvider:
 
     def geocode(self, query: str) -> dict:
         self._ensure_open()
+        coordinates = parse_coordinates(query)
+        if coordinates is not None:
+            return dict(found=True, lat=coordinates[0], lon=coordinates[1])
         return self._geocoder.geocode(query)
 
     def list_nearby_ers(self, lat: float, lon: float, radius_km: int = 5) -> list[dict]:
         self._ensure_open()
-        return self._medical.list_nearby_ers(lat, lon, radius_km)
+        with self._lock:
+            return self._medical.list_nearby_ers(
+                lat, lon, radius_km, detail_cache=self._detail_cache, raise_on_error=True
+            )
 
     def get_er_bed_status(
         self,
@@ -62,7 +71,7 @@ class LiveProvider:
     ) -> list[dict]:
         self._ensure_open()
         with self._lock:
-            key = make_key(sido, sigungu)
+            key = make_key(normalize_sido(sido), sigungu)
             if force_refresh and key in self._bed_cache:
                 # Expire, rather than remove, so the client's own failure path
                 # may return its explicitly stale cached response.
@@ -74,24 +83,33 @@ class LiveProvider:
                 sigungu,
                 hpids,
                 bed_cache=self._bed_cache,
+                raise_on_error=True,
             )
             cached = before is not None and self._bed_cache.get(key) is before
             return [
-                {**row, "is_cached": cached, "is_stale": bool(row.get("stale", False))}
+                {
+                    **row,
+                    "is_cached": bool(row.get("is_cached", cached)),
+                    "is_stale": bool(row.get("is_stale", row.get("stale", False))),
+                }
                 for row in rows
             ]
 
     def get_severe_acceptance(self, sido: str, sigungu: str, condition: str) -> list[dict]:
         self._ensure_open()
-        return self._medical.get_severe_acceptance(sido, sigungu, condition)
+        return self._medical.get_severe_acceptance(sido, sigungu, condition, raise_on_error=True)
 
     def get_er_detail(self, hpid: str) -> dict:
         self._ensure_open()
-        return self._medical.get_er_detail(hpid)
+        with self._lock:
+            return self._medical.get_er_detail(
+                hpid, detail_cache=self._detail_cache, raise_on_error=True
+            )
 
     def clear_cache(self) -> None:
         with self._lock:
             self._bed_cache.clear()
+            self._detail_cache.clear()
 
     def close(self) -> None:
         if not self._closed:

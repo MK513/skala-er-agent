@@ -78,7 +78,7 @@ def test_parse_er_detail_no_result_returns_empty_dict():
 
 
 def test_hvidate_to_iso():
-    assert parser.hvidate_to_iso("20260910143000") == "2026-09-10T14:30:00"
+    assert parser.hvidate_to_iso("20260910143000") == "2026-09-10T14:30:00+09:00"
     assert parser.hvidate_to_iso(None) is None
     assert parser.hvidate_to_iso("이상한값") is None
 

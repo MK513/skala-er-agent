@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import httpx
 
 from er_finder.search.geocoder import KakaoGeocoder
@@ -5,27 +8,16 @@ from er_finder.search.geocoder import KakaoGeocoder
 
 def test_geocode_uses_address_then_keyword_fallback_and_parses_region():
     paths: list[str] = []
+    fixture_path = Path(__file__).parents[2] / "fixtures/kakao/sample_response.json"
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert payload["fixture_provenance"]["kind"] == "synthetic"
 
     def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
         assert request.headers["Authorization"] == "KakaoAK kakao-secret"
         if request.url.path.endswith("/address.json"):
             return httpx.Response(200, json={"meta": {"total_count": 0}, "documents": []})
-        return httpx.Response(
-            200,
-            json={
-                "meta": {"total_count": 1, "is_end": True},
-                "documents": [
-                    {
-                        "place_name": "역삼역",
-                        "address_name": "서울 강남구 역삼동 804",
-                        "road_address_name": "서울 강남구 테헤란로 156",
-                        "x": "127.0365",
-                        "y": "37.5007",
-                    }
-                ],
-            },
-        )
+        return httpx.Response(200, json=payload)
 
     geocoder = KakaoGeocoder(
         kakao_key="kakao-secret", client=httpx.Client(transport=httpx.MockTransport(handler))

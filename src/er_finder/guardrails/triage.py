@@ -6,11 +6,13 @@ from er_finder.agent.prompts import CLASSIFIER_PROMPT
 from er_finder.models import Condition, TriageAssessment
 from er_finder.safety import assess_input, mask_pii
 
+
 # LLM 출력 구조 정의 (Pydantic 모델)
 class ClassifierOutput(BaseModel):
     """
     LLM이 생성할 구조화된 분류(Classifier) 출력 데이터 모델
     """
+
     model_config = ConfigDict(extra="forbid")
     severity: Literal["critical", "urgent", "standard"]
     condition: Condition | None = None
@@ -22,6 +24,7 @@ class InputClassifier:
     """
     사용자의 입력 텍스트를 정규식 기반 룰셋과 LLM을 조합하여 종합 평가하는 클래스
     """
+
     def __init__(self, model=None):
         self.model = model
 
@@ -31,7 +34,12 @@ class InputClassifier:
         """
         masked = mask_pii(text)
         result = assess_input(masked)
-        if self.model is None or result.blocked or result.greeting:
+        if (
+            self.model is None
+            or result.blocked
+            or result.greeting
+            or (result.triage.severity == "critical" and not result.suspicious)
+        ):
             return result
         try:
             output = self.model.with_structured_output(ClassifierOutput).invoke(
@@ -40,7 +48,7 @@ class InputClassifier:
             assessment = TriageAssessment.model_validate(output.model_dump())
             ranks = {"standard": 0, "urgent": 1, "critical": 2}
             if ranks[assessment.severity] >= ranks[result.triage.severity]:
-                if assessment.condition is None:
+                if result.triage.condition is not None:
                     assessment.condition = result.triage.condition
                 result.triage = assessment
             elif assessment.condition and result.triage.condition is None:

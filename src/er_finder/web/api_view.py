@@ -67,7 +67,7 @@ def render_api_view() -> None:
             with st.spinner("E-Gen 기관 정보를 조회하고 있습니다…"):
                 from er_finder.medical_api.client import list_nearby_ers
 
-                rows = list_nearby_ers(lat, lon, radius)
+                rows = list_nearby_ers(lat, lon, radius, raise_on_error=True)
                 result["rows"] = [
                     {
                         "기관 ID": row.get("hpid") or "확인 불가",
@@ -96,8 +96,8 @@ def render_api_view() -> None:
         st.error("기관 정보를 조회하지 못했습니다. 설정과 연결 상태를 확인한 후 다시 조회하세요.")
     elif not result["rows"]:
         st.info(
-            "표시할 기관 정보가 없습니다. 빈 응답이거나 조회 실패일 수 있습니다. "
-            "반경과 설정을 확인한 후 다시 조회하세요."
+            "API가 빈 응답을 반환했습니다. 선택한 반경의 기관 자료를 확인할 수 없습니다. "
+            "반경을 조정해 다시 조회하세요."
         )
     else:
         st.caption(f"조회 결과 · {len(result['rows'])}곳 · 거리순")
@@ -133,7 +133,7 @@ def _render_detail(result: dict, *, configured: bool) -> None:
                 with st.spinner("기관 상세 정보를 조회하고 있습니다…"):
                     from er_finder.medical_api.client import get_er_detail
 
-                    detail["data"] = get_er_detail(selected)
+                    detail["data"] = get_er_detail(selected, raise_on_error=True)
             except Exception:
                 detail["error"] = True
             result["detail"] = detail
@@ -142,8 +142,11 @@ def _render_detail(result: dict, *, configured: bool) -> None:
     if detail is None or detail["hpid"] != selected:
         st.caption("기관을 선택하고 상세 조회를 누르면 주소와 대표전화가 표시됩니다.")
         return
-    if detail["error"] or not detail["data"]:
-        st.info("상세 정보를 확인하지 못했습니다. 빈 응답이거나 조회 실패일 수 있습니다.")
+    if detail["error"]:
+        st.error("상세 조회에 실패했습니다. 연결 상태를 확인하고 다시 조회하세요.")
+        return
+    if not detail["data"]:
+        st.info("API가 빈 응답을 반환했습니다. 선택한 기관의 상세 자료가 없습니다.")
         return
 
     data = detail["data"]

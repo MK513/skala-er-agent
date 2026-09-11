@@ -99,3 +99,32 @@ def test_different_users_do_not_share_data(raw_store):
 
     assert store_b.get_home_address() is None
     assert store_b.get_recent_visits() == []
+
+
+def test_recent_visits_pages_past_100_records_and_isolates_user(raw_store):
+    from datetime import UTC, datetime, timedelta
+
+    one = ERFinderStore(raw_store, "one")
+    two = ERFinderStore(raw_store, "two")
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(125):
+        record = one.add_visit(hpid=f"H{index}", name=f"병원 {index}", symptom_summary="테스트")
+        raw_store.put(
+            ("er_finder", "one", "visits"),
+            record["visit_id"],
+            {
+                **record,
+                "saved_at": (start + timedelta(minutes=index)).isoformat(),
+            },
+        )
+    two.add_visit(hpid="OTHER", name="다른 사용자", symptom_summary="테스트")
+    assert [visit["hpid"] for visit in one.get_recent_visits(limit=3)] == ["H124", "H123", "H122"]
+    assert len(one.get_recent_visits(limit=125)) == 125
+    assert [visit["hpid"] for visit in two.get_recent_visits()] == ["OTHER"]
+
+
+def test_recent_visits_zero_returns_none_and_negative_limit_is_rejected(store):
+    store.add_visit(hpid="H", name="병원", symptom_summary="테스트")
+    assert store.get_recent_visits(limit=0) == []
+    with pytest.raises(ValueError):
+        store.get_recent_visits(limit=-1)

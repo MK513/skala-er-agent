@@ -5,7 +5,8 @@ from er_finder.guardrails.pii import normalize
 from er_finder.models import TriageAssessment
 
 # 설계서 부록 A. 키워드 사전 40개 (어간 형태, 공백 제거 후 부분 문자열 일치)
-# 분류 및 개수는 설계서와 동일하게 유지함: 의식·반응 7 / 호흡 8 / 심장·흉통 5 / 출혈 6 / 신경 7 / 외상·중독 7
+# 설계서와 동일한 개수: 의식·반응 7 / 호흡 8 / 심장·흉통 5
+# 출혈 6 / 신경 7 / 외상·중독 7
 CRITICAL_PHRASES = (
     # 의식·반응 (7)
     "의식없",
@@ -62,7 +63,7 @@ INJECTION = re.compile(
     r"|(?:시스템|개발자)\s*프롬프트.{0,15}(?:출력|보여|공개)"
     r"|ignore.{0,30}(?:instructions|rules)|(?:reveal|print).{0,30}system\s*prompt"
     r"|(?:API|인증|비밀)\s*(?:키|key).{0,12}(?:보여|출력|공개)",
-    re.I,
+    re.I | re.S,
 )
 
 # 의심스러운 의도 탐지용 정규식 (인젝션 공격의 징후 탐지)
@@ -73,7 +74,8 @@ SUSPICIOUS = re.compile(
 # 서비스 범위 외(Out of Scope) 질문 감지용 정규식
 # - 진단/처방 요청, 잡담, 관련 없는 주제(주식, 날씨 등)를 차단
 OUT_OF_SCOPE = re.compile(
-    r"무슨\s*(?:병|약)|어떤\s*약|약.{0,8}(?:먹|복용)|처방해|진단해|치료법|주식|코인|날씨|시\s*써줘"
+    r"무슨\s*(?:병|약)|어떤\s*약|약.{0,8}(?:먹어야|먹어도|먹을까|복용해도|복용량|추천)"
+    r"|처방해|진단해|치료법|주식|코인|날씨|시\s*써줘"
 )
 
 
@@ -106,9 +108,9 @@ def assess_input(text: str) -> InputAssessment:
             condition = "분만"
         elif "교통사고" in compact or "중증외상" in compact:
             condition = "중증외상"
-            
+
     injection = bool(INJECTION.search(text))
-    out = bool(OUT_OF_SCOPE.search(text)) and "응급실" not in text and not critical
+    out = bool(OUT_OF_SCOPE.search(text)) and not critical
     reason = None
     if injection:
         reason = (

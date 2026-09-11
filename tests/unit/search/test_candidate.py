@@ -1,10 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from er_finder.search.candidates import is_stale, select_candidates
 
-NOW = datetime(2027, 1, 1, tzinfo=timezone.utc)
+NOW = datetime(2027, 1, 1, tzinfo=UTC)
 
 
 def iso(delta_seconds=0):

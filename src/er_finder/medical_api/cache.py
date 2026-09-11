@@ -8,6 +8,9 @@
 from __future__ import annotations
 
 import time
+from typing import TypeVar
+
+T = TypeVar("T")
 
 DEFAULT_TTL_SECONDS = 60
 
@@ -17,7 +20,7 @@ def make_key(sido: str, sigungu: str) -> str:
     return f"{sido}:{sigungu}"
 
 
-def get(cache: dict, key: str, ttl: float = DEFAULT_TTL_SECONDS) -> list | None:
+def get(cache: dict[str, tuple[T, float]], key: str, ttl: float = DEFAULT_TTL_SECONDS) -> T | None:
     """캐시에서 값을 꺼낸다. 없거나 ttl초가 지났으면 None"""
     if key not in cache:
         return None
@@ -27,7 +30,7 @@ def get(cache: dict, key: str, ttl: float = DEFAULT_TTL_SECONDS) -> list | None:
     return value
 
 
-def save(cache: dict, key: str, value: list) -> None:
+def save(cache: dict[str, tuple[T, float]], key: str, value: T) -> None:
     """캐시에 값을 저장한다."""
     cache[key] = (value, time.time())
 
