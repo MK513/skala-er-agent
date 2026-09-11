@@ -6,7 +6,7 @@ from datetime import datetime
 from threading import Event, RLock
 from zoneinfo import ZoneInfo
 
-from er_finder.memory.state import SessionState
+from er_finder.memory.state import ERFinderState
 from er_finder.models import DISCLAIMER, ERSearchReply
 from er_finder.safety import assess_input, mask_pii, sanitize_prose
 from er_finder.search.candidates import select_candidates
@@ -51,7 +51,7 @@ def extract_location(text: str) -> str | None:
     return m[1].strip() if m else None
 
 
-class SearchSession(SessionState):
+class SearchSession(ERFinderState):
     def __init__(self, provider, transport="car", now=None):
         super().__init__()
         self.provider = provider
@@ -101,8 +101,8 @@ class SearchSession(SessionState):
             self.triage = self.assessment.triage
             self.symptom_text = self.text
         if self.location_query:
-            self.location = None
-        elif not self.location and home_address:
+            self.current_location = None
+        elif not self.current_location and home_address:
             self.location_query = home_address
         self.radii = radius_sequence(self.transport, self.text)
         self.radius_index = 0
@@ -146,7 +146,7 @@ class SearchSession(SessionState):
     def next_calls(self):
         if self.assessment.blocked or self.assessment.greeting:
             return []
-        if not self.location:
+        if not self.current_location:
             if self.location_query and not self.geo_attempted:
                 return [{"name": "geocode", "args": {"query": self.location_query}}]
             return []
@@ -155,8 +155,8 @@ class SearchSession(SessionState):
                 {
                     "name": "list_nearby_ers",
                     "args": {
-                        "lat": self.location["lat"],
-                        "lon": self.location["lon"],
+                        "lat": self.current_location["lat"],
+                        "lon": self.current_location["lon"],
                         "radius_km": self.radius,
                     },
                 }
@@ -205,8 +205,8 @@ class SearchSession(SessionState):
                 {
                     "name": "list_nearby_ers",
                     "args": {
-                        "lat": self.location["lat"],
-                        "lon": self.location["lon"],
+                        "lat": self.current_location["lat"],
+                        "lon": self.current_location["lon"],
                         "radius_km": self.radii[self.radius_index + 1],
                     },
                 }
@@ -240,12 +240,12 @@ class SearchSession(SessionState):
         if result.get("found"):
             try:
                 distance_km(float(result["lat"]), float(result["lon"]), 0, 0)
-                self.location = {**result, "lat": float(result["lat"]), "lon": float(result["lon"])}
+                self.current_location = {**result, "lat": float(result["lat"]), "lon": float(result["lon"])}
             except (ValueError, TypeError, KeyError):
-                self.location = None
+                self.current_location = None
         else:
-            self.location = None
-        return {"location": self.location, **self.status()}
+            self.current_location = None
+        return {"location": self.current_location, **self.status()}
 
     def list_nearby_ers(self, lat, lon, radius_km=5):
         self._require("list_nearby_ers", dict(lat=lat, lon=lon, radius_km=radius_km))
@@ -372,7 +372,7 @@ class SearchSession(SessionState):
             self.candidates = []
             reason = "응급실 찾기를 시작하려면 위치와 증상이 필요합니다."
             action = "현재 위치와 증상을 알려주세요."
-        elif not self.location:
+        elif not self.current_location:
             reason = "현재 위치를 확인할 수 없습니다."
             action = "현재 위치를 주소·동 이름·건물명·역 이름으로 알려주세요."
         elif not self.candidates:
@@ -444,7 +444,7 @@ class SearchSession(SessionState):
 
     def snapshot(self):
         return {
-            "current_location": self.location,
+            "current_location": self.current_location,
             "triage": self.triage.model_dump(),
             "search_radius_km": self.radius,
             "candidates": [h.model_dump() for h in self.candidates],

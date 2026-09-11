@@ -45,13 +45,13 @@ def ProfileDynamicPrompt(session, profiles, visit):
     데이터로만 직렬화해서 붙인다.
     """
 
-    @dynamic_prompt(name="ProfileDynamicPrompt")
+    @dynamic_prompt
     def profile_dynamic_prompt(request):
         data = session.status()
         data.update(
             transport=request.runtime.context.transport,
-            home_address=profiles.home_address(),
-            recent_visits=profiles.recent_visits()[-3:],
+            home_address=profiles.get_home_address(),
+            recent_visits=profiles.get_recent_visits()[-3:],
             pending_visit=visit.pending if not visit.decided else None,
             visit_decided=visit.decided,
             visit_saved=visit.saved,

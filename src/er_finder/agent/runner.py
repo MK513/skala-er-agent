@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 from langchain_core.messages import HumanMessage
@@ -9,6 +10,8 @@ from langchain.agents.middleware import (
     ToolRetryMiddleware,
 )
 from langchain.agents.structured_output import ToolStrategy
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
 
 from er_finder.cli.renderer import render_reply
 from er_finder.agent.prompts import SYSTEM_PROMPT
@@ -20,14 +23,76 @@ from er_finder.guardrails.middleware import (
 )
 from er_finder.guardrails.pii import PII_PATTERN
 from er_finder.guardrails.triage import InputClassifier
-from er_finder.memory.context import RuntimeContext
-from er_finder.memory.session import clear_session, make_checkpointer
-from er_finder.memory.state import ERGraphState
-from er_finder.memory.store import Profiles
-from er_finder.memory.visit_plan import VisitPlan, selected_index
+from er_finder.memory.context import ERFinderContext
+from er_finder.memory.session import SessionManager
+from er_finder.memory.state import ERFinderState
+from er_finder.memory.store import ERFinderStore
+from er_finder.memory.visit_plan import PendingVisitPlan, VisitPlanStatus
 from er_finder.models import EMERGENCY, ERSearchReply
 from er_finder.safety import mask_pii, safe_data
 from er_finder.search.service import SearchSession
+
+
+def selected_index(text: str) -> int | None:
+    """"1번", "2", "세 번째" 같은 후보 선택 표현에서 0-based 인덱스를 뽑는다.
+
+    interfaces.md에는 없는 애플리케이션 레벨 파싱 규칙이라 memory/가 아닌
+    여기(agent/runner.py)에 둔다. 매칭되는 표현이 없으면 None.
+    """
+    match = re.search(r"(\d+)\s*번(?:째)?|^\s*(\d+)\s*$", text.strip())
+    if not match:
+        return None
+    digits = match[1] or match[2]
+    return int(digits) - 1
+
+
+class VisitPlanTracker:
+    """chat()/approve() 사이에서 "선택된 후보"의 승인 대기 상태만 추적하는
+    러너 전용 어댑터.
+
+    실제 저장은 HITL 승인 이후 agent/tools.py의 save_visit_plan 도구가
+    memory.visit_plan.VisitPlanService로 직접 수행하므로(구현 모듈은
+    interfaces.md §2 표를 따름), 여기서는 그 전까지 "무엇이 대기 중인지",
+    "결정됐는지"만 들고 있는다.
+    """
+
+    def __init__(self) -> None:
+        self._plan: PendingVisitPlan | None = None
+        self.decided = False
+        self.saved = False
+
+    def prepare(self, hospital, symptom_summary: str) -> None:
+        self._plan = PendingVisitPlan(
+            hpid=hospital.hpid, name=hospital.name, symptom_summary=symptom_summary
+        )
+        self.decided = False
+        self.saved = False
+
+    def reset(self) -> None:
+        self._plan = None
+        self.decided = False
+        self.saved = False
+
+    def validate(self, args: dict) -> None:
+        """모델이 요청한 save_visit_plan 인자가 방금 선택한 후보와 일치하는지 확인한다."""
+        if self._plan is None or args.get("hpid") != self._plan.hpid:
+            raise ValueError("선택한 병원과 저장 요청이 일치하지 않습니다.")
+
+    @property
+    def pending(self) -> dict | None:
+        if self._plan is None or self.decided:
+            return None
+        return {
+            "hpid": self._plan.hpid,
+            "name": self._plan.name,
+            "symptom_summary": self._plan.symptom_summary,
+        }
+
+    def mark_decided(self, approved: bool) -> None:
+        if self._plan is not None:
+            self._plan.status = VisitPlanStatus.APPROVED if approved else VisitPlanStatus.REJECTED
+        self.decided = True
+        self.saved = approved
 
 
 @dataclass
@@ -67,12 +132,14 @@ class ERFinder:
         훅 단계를 그대로 표기한 것으로, 순서를 바꾸면 실행 시점이 달라지므로
         임의로 재배열하지 않는다.
         """
-        self.context = RuntimeContext(user_id, transport)
+        self.context = ERFinderContext(user_id=user_id, transport=transport)
         self.session = SearchSession(provider, transport)
-        self.profiles = Profiles(user_id, store)
-        self.visit = VisitPlan(self.profiles, self.session.now)
+        self.store = store or InMemoryStore()
+        self.profiles = ERFinderStore(self.store, user_id)
+        self.visit = VisitPlanTracker()
 
-        self.checkpointer = checkpointer or make_checkpointer()
+        self.checkpointer = checkpointer or InMemorySaver()
+        self.session_manager = SessionManager(self.checkpointer)
         self.classifier = classifier or InputClassifier()
         self.on_emergency = on_emergency
         self.graph = create_agent(
@@ -80,10 +147,10 @@ class ERFinder:
             tools=TOOLS,
             system_prompt=SYSTEM_PROMPT,
             response_format=ToolStrategy(ERSearchReply, handle_errors=True),
-            state_schema=ERGraphState,
-            context_schema=RuntimeContext,
+            state_schema=ERFinderState,
+            context_schema=ERFinderContext,
             checkpointer=self.checkpointer,
-            store=self.profiles.store,
+            store=self.store,
             middleware=[
                 EmergencyInputGuard(self.session),  # before_agent
                 ProfileDynamicPrompt(self.session, self.profiles, self.visit),  # before_model
@@ -97,7 +164,9 @@ class ERFinder:
                 EvidenceCheckMiddleware(self.session),  # after_agent
             ],
         )
-        self.run_config = {"configurable": {"thread_id": user_id, "session": self.session}}
+        self.run_config = self.session_manager.build_config(user_id)
+        self.run_config["configurable"]["session"] = self.session
+        self.run_config["configurable"]["profile_store"] = self.profiles
         self.last_reply = None
         self.pending = False
         self.mode = "search"
@@ -129,7 +198,7 @@ class ERFinder:
         # 항상 새로 조회하라고 명시한다(캐시된 이력을 그대로 신뢰하지 않음).
         history_note = None
         if "지난번" in text or "최근 방문" in text:
-            visits = self.profiles.recent_visits()
+            visits = self.profiles.get_recent_visits()
             history_note = (
                 f"최근 저장한 방문 계획: {safe_data(visits[-1]['name'])}. 현재 수용 여부는 새로 확인해야 합니다."
                 if visits else "저장된 방문 기록이 없습니다."
@@ -150,7 +219,7 @@ class ERFinder:
             self.visit.reset()
             self.session.begin(
                 text,
-                self.profiles.home_address(),
+                self.profiles.get_home_address(),
                 force_refresh=force_refresh,
                 assessment=assessment,
             )
@@ -170,8 +239,7 @@ class ERFinder:
         if not self.pending:
             raise ValueError("승인 대기 중인 방문 계획이 없습니다.")
 
-        self.visit.approved = approved
-        self.visit.decided = True
+        self.visit.mark_decided(approved)
         self.pending = False
 
         decision = (
@@ -219,12 +287,14 @@ class ERFinder:
     def end_session(self):
         """대화 스레드를 초기화해 다음 chat() 호출이 새 세션처럼 시작되게 한다.
 
-        clear_session()이 checkpointer에 쌓인 LangGraph 체크포인트(스레드
-        히스토리)를 지우고, 그 외 필드는 __init__ 시점의 초기값으로
-        되돌린다. provider/session 객체 자체는 재사용하므로 새 ERFinder를
-        만들 필요 없이 같은 인스턴스로 다음 사용자와의 대화를 이어갈 수 있다.
+        session_manager.end_session()이 checkpointer에 쌓인 LangGraph 체크포인트
+        (스레드 히스토리)를 지우고, session.clear()가 검색 진행 상태를
+        __init__ 시점의 초기값으로 되돌린다. provider 객체 자체는 재사용하므로
+        새 ERFinder를 만들 필요 없이 같은 인스턴스로 다음 사용자와의 대화를
+        이어갈 수 있다.
         """
-        clear_session(self.session, self.checkpointer, self.context.user_id)
+        self.session_manager.end_session(self.context.user_id)
+        self.session.clear()
         self.visit.reset()
         self.pending = False
         self.mode = "search"
